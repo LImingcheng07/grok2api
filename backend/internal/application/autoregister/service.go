@@ -509,6 +509,15 @@ func (s *Service) registerOne(ctx context.Context, cfg config.AutoRegisterConfig
 			s.logger.Warn("auto_register_console_import_failed", "error", err, "email", name)
 		}
 	}
+
+	// Post-import Build probe (HM2899/grokcli-2api style): convert → settle → probe → drop 403.
+	// Only accounts that pass stay in the schedulable pool and count as success.
+	if cfg.VerifyBuildAfterRegister && len(importResult.AccountIDs) > 0 {
+		if err := s.verifyImportedBuild(reqCtx, cfg, index, name, proxyLabel, importResult.AccountIDs, result.Logs); err != nil {
+			return
+		}
+	}
+
 	s.setStatus(func(st *Status) {
 		st.LastSuccessAt = time.Now().UTC()
 		st.LastError = ""
@@ -520,6 +529,93 @@ func (s *Service) registerOne(ctx context.Context, cfg config.AutoRegisterConfig
 		st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf("[phase:done] #%d success email=%s proxy=%s", index, name, proxyLabel))
 	})
 	s.logger.Info("auto_register_success", "email", name, "proxy", proxyLabel, "imported", importResult.Created+importResult.Updated, "account_ids", importResult.AccountIDs)
+}
+
+// verifyImportedBuild converts Web SSO → Build, waits for settle, probes /models.
+// On 401/403 (dead token) the account pair is deleted and the register job fails.
+func (s *Service) verifyImportedBuild(ctx context.Context, cfg config.AutoRegisterConfig, index int, name, proxyLabel string, webIDs []uint64, logs []string) error {
+	s.setStatus(func(st *Status) {
+		st.Phase = "convert_build"
+		st.Progress = fmt.Sprintf("#%d converting %s to Build for probe", index, name)
+		st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf("[phase:convert_build] #%d email=%s", index, name))
+	})
+	convert, err := s.accounts.ConvertWebAccountsToBuild(ctx, webIDs)
+	if err != nil {
+		s.accounts.DropRegisteredAccounts(ctx, webIDs, 0, "convert failed: "+err.Error())
+		s.fail("convert_build", "convert to build: "+err.Error(), logs)
+		return err
+	}
+	if convert.Failed > 0 || len(convert.BuildAccountIDs) == 0 {
+		msg := fmt.Sprintf("convert to build failed (failed=%d build_ids=%d)", convert.Failed, len(convert.BuildAccountIDs))
+		s.accounts.DropRegisteredAccounts(ctx, webIDs, 0, msg)
+		s.fail("convert_build", msg, logs)
+		return fmt.Errorf("%s", msg)
+	}
+	buildID := convert.BuildAccountIDs[0]
+
+	delay := cfg.ProbeDelay.Value()
+	if delay < 0 {
+		delay = 0
+	}
+	if delay > 10*time.Minute {
+		delay = 10 * time.Minute
+	}
+	if delay > 0 {
+		s.setStatus(func(st *Status) {
+			st.Phase = "probe_settle"
+			st.Progress = fmt.Sprintf("#%d settle %ds before Build probe", index, int(delay.Seconds()))
+			st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf(
+				"[phase:probe_settle] #%d wait=%ds email=%s build_id=%d", index, int(delay.Seconds()), name, buildID,
+			))
+		})
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			// Keep accounts if cancelled mid-settle (user stop); they can be probed later.
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	s.setStatus(func(st *Status) {
+		st.Phase = "probe_build"
+		st.Progress = fmt.Sprintf("#%d probing Build for %s", index, name)
+		st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf("[phase:probe_build] #%d email=%s build_id=%d", index, name, buildID))
+	})
+	probe, err := s.accounts.ProbeBuildAccount(ctx, buildID, cfg.ProbeModel)
+	if err != nil {
+		s.accounts.DropRegisteredAccounts(ctx, webIDs, buildID, "probe error: "+err.Error())
+		s.fail("probe_build", "probe build: "+err.Error(), logs)
+		return err
+	}
+	if !probe.OK {
+		reason := probe.Error
+		if reason == "" {
+			reason = fmt.Sprintf("probe failed status=%d", probe.StatusCode)
+		}
+		// 401/403 / permanent denial → delete (不要 403 号). Network/5xx keep account, no success credit.
+		drop := probe.DeadToken || probe.StatusCode == 401 || probe.StatusCode == 403
+		if drop {
+			s.accounts.DropRegisteredAccounts(ctx, webIDs, buildID, reason)
+			msg := fmt.Sprintf("build probe rejected (status=%d dead=%v): %s", probe.StatusCode, probe.DeadToken, reason)
+			s.fail("probe_build", msg, logs)
+			s.logger.Warn("auto_register_probe_rejected",
+				"email", name, "build_id", buildID, "status", probe.StatusCode, "dead", probe.DeadToken, "error", reason,
+			)
+			return fmt.Errorf("%s", msg)
+		}
+		// Soft fail (429/5xx/network): leave in pool, do not count as register success.
+		s.fail("probe_build", fmt.Sprintf("build probe soft-fail status=%d: %s", probe.StatusCode, reason), logs)
+		return fmt.Errorf("build probe soft-fail: %s", reason)
+	}
+	s.setStatus(func(st *Status) {
+		st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf(
+			"[phase:probe_build] #%d ok email=%s build_id=%d model=%s", index, name, buildID, probe.Model,
+		))
+	})
+	s.logger.Info("auto_register_probe_ok", "email", name, "build_id", buildID, "model", probe.Model, "proxy", proxyLabel)
+	return nil
 }
 
 func (s *Service) pickRandomProxy(ctx context.Context, cfg config.AutoRegisterConfig) (proxyURL, label string, err error) {

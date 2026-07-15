@@ -52,7 +52,11 @@ type AutoRegisterConfig struct {
 	CaptchaTimeout    time.Duration
 	MailTimeout       time.Duration
 	AlsoImportConsole bool
-	FallbackProxyURL  string
+	// VerifyBuildAfterRegister probes Build after register; 403/dead tokens are dropped.
+	VerifyBuildAfterRegister bool
+	ProbeDelay               time.Duration
+	ProbeModel               string
+	FallbackProxyURL         string
 	// SkipCaptcha attempts signup without Turnstile when true (clean residential IP may pass).
 	SkipCaptcha bool
 }

@@ -61,9 +61,12 @@ type autoRegisterConfigDTO struct {
 	CaptchaEndpoint        string `json:"captchaEndpoint"`
 	CaptchaTimeout         string `json:"captchaTimeout"`
 	MailTimeout            string `json:"mailTimeout"`
-	AlsoImportConsole      bool   `json:"alsoImportConsole"`
-	FallbackProxyURL       string `json:"fallbackProxyURL"`
-	SkipCaptcha            bool   `json:"skipCaptcha"`
+	AlsoImportConsole        bool   `json:"alsoImportConsole"`
+	VerifyBuildAfterRegister bool   `json:"verifyBuildAfterRegister"`
+	ProbeDelay               string `json:"probeDelay"`
+	ProbeModel               string `json:"probeModel"`
+	FallbackProxyURL         string `json:"fallbackProxyURL"`
+	SkipCaptcha              bool   `json:"skipCaptcha"`
 }
 
 type serverConfigDTO struct {
@@ -241,6 +244,9 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			CaptchaKey: value.AutoRegister.CaptchaKey, CaptchaKeyConfigured: value.AutoRegister.CaptchaKeyConfigured,
 			CaptchaEndpoint: value.AutoRegister.CaptchaEndpoint, CaptchaTimeout: value.AutoRegister.CaptchaTimeout,
 			MailTimeout: value.AutoRegister.MailTimeout, AlsoImportConsole: value.AutoRegister.AlsoImportConsole,
+			VerifyBuildAfterRegister: value.AutoRegister.VerifyBuildAfterRegister,
+			ProbeDelay:               value.AutoRegister.ProbeDelay,
+			ProbeModel:               value.AutoRegister.ProbeModel,
 			FallbackProxyURL: value.AutoRegister.FallbackProxyURL, SkipCaptcha: value.AutoRegister.SkipCaptcha,
 		},
 	}
@@ -306,6 +312,9 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				CaptchaKeyConfigured: config.AutoRegister.CaptchaKeyConfigured,
 				CaptchaEndpoint: config.AutoRegister.CaptchaEndpoint, CaptchaTimeout: config.AutoRegister.CaptchaTimeout,
 				MailTimeout: config.AutoRegister.MailTimeout, AlsoImportConsole: config.AutoRegister.AlsoImportConsole,
+				VerifyBuildAfterRegister: config.AutoRegister.VerifyBuildAfterRegister,
+				ProbeDelay:               config.AutoRegister.ProbeDelay,
+				ProbeModel:               config.AutoRegister.ProbeModel,
 				FallbackProxyURL: config.AutoRegister.FallbackProxyURL, SkipCaptcha: config.AutoRegister.SkipCaptcha,
 			},
 		},

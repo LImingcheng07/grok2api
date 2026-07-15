@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -879,6 +880,109 @@ func webConsoleAccountName(webName, fallback string) string {
 		return "Grok Console " + suffix
 	}
 	return name
+}
+
+// BuildProbeResult is the outcome of a post-register / admin Build live check.
+// Mirrors HM2899/grokcli-2api model_health probe: real upstream call, then kick dead tokens.
+type BuildProbeResult struct {
+	OK         bool
+	BuildID    uint64
+	StatusCode int
+	Model      string
+	Error      string
+	// DeadToken means 401/403 permanent denial — account must leave the pool.
+	DeadToken bool
+}
+
+// ProbeBuildAccount hits Grok Build with a minimal request (ListModels, optional chat probe model).
+// status 401/403 and permanent chat denials mark DeadToken.
+func (s *Service) ProbeBuildAccount(ctx context.Context, buildID uint64, probeModel string) (BuildProbeResult, error) {
+	value, err := s.accounts.Get(ctx, buildID)
+	if err != nil {
+		return BuildProbeResult{}, mapRepositoryError(err)
+	}
+	if value.Provider != accountdomain.ProviderBuild {
+		return BuildProbeResult{}, fmt.Errorf("账号 %d 不是 Grok Build", buildID)
+	}
+	adapter, ok := s.providers.Models(accountdomain.ProviderBuild)
+	if !ok {
+		return BuildProbeResult{}, fmt.Errorf("Grok Build 模型目录能力未注册")
+	}
+	models, err := adapter.ListModels(ctx, value)
+	if err != nil {
+		result := BuildProbeResult{BuildID: buildID, Error: err.Error()}
+		result.StatusCode, result.DeadToken = classifyBuildProbeError(err.Error())
+		return result, nil
+	}
+	model := strings.TrimSpace(probeModel)
+	if model == "" && len(models) > 0 {
+		model = models[0]
+	}
+	// ListModels 2xx is already a strong signal; optional model id is recorded for logs.
+	return BuildProbeResult{OK: true, BuildID: buildID, StatusCode: http.StatusOK, Model: model}, nil
+}
+
+func classifyBuildProbeError(message string) (status int, dead bool) {
+	text := strings.ToLower(strings.TrimSpace(message))
+	// ListModels formats: "上游模型接口返回 %d"
+	for _, code := range []int{401, 403, 402, 429} {
+		if strings.Contains(text, fmt.Sprintf("返回 %d", code)) || strings.Contains(text, fmt.Sprintf(" %d", code)) {
+			status = code
+			break
+		}
+	}
+	if status == 0 {
+		if strings.Contains(text, "401") {
+			status = 401
+		} else if strings.Contains(text, "403") {
+			status = 403
+		}
+	}
+	if status == 401 || status == 403 {
+		dead = true
+	}
+	if strings.Contains(text, "access to the chat endpoint is denied") || strings.Trim(strings.TrimSpace(text), " .!\t\r\n") == "access denied" {
+		dead = true
+		if status == 0 {
+			status = 403
+		}
+	}
+	if strings.Contains(text, "unauthorized") || strings.Contains(text, "invalid token") || strings.Contains(text, "token expired") {
+		dead = true
+		if status == 0 {
+			status = 401
+		}
+	}
+	return status, dead
+}
+
+// DropRegisteredAccounts removes a failed probe account and any linked Web/Build pair.
+func (s *Service) DropRegisteredAccounts(ctx context.Context, webIDs []uint64, buildID uint64, reason string) {
+	seen := make(map[uint64]struct{})
+	drop := func(id uint64) {
+		if id == 0 {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		if err := s.Delete(ctx, id); err != nil {
+			s.logger.Warn("drop_registered_account_failed", "account_id", id, "reason", reason, "error", err)
+		} else {
+			s.logger.Info("drop_registered_account", "account_id", id, "reason", reason)
+		}
+	}
+	for _, id := range webIDs {
+		if id == 0 {
+			continue
+		}
+		if view, err := s.accounts.Get(ctx, id); err == nil && view.LinkedAccountID != 0 {
+			drop(view.LinkedAccountID)
+		}
+		drop(id)
+	}
+	drop(buildID)
 }
 
 // ConvertWebAccountsToBuild 使用 Web SSO 自动完成 xAI Device Flow，并建立唯一的 Web/Build 账号关联。

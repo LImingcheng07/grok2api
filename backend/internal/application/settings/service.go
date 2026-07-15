@@ -131,9 +131,12 @@ type AutoRegisterConfig struct {
 	CaptchaEndpoint        string
 	CaptchaTimeout         string
 	MailTimeout            string
-	AlsoImportConsole      bool
-	FallbackProxyURL       string
-	SkipCaptcha            bool
+	AlsoImportConsole        bool
+	VerifyBuildAfterRegister bool
+	ProbeDelay               string
+	ProbeModel               string
+	FallbackProxyURL         string
+	SkipCaptcha              bool
 }
 
 // EditableConfig 聚合管理端允许修改的运行参数。
@@ -412,6 +415,23 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	}
 	ar.SkipCaptcha = value.AutoRegister.SkipCaptcha
 	ar.AlsoImportConsole = value.AutoRegister.AlsoImportConsole
+	// Post-register Build probe (drop 403). Older DB rows omit the field → zero false;
+	// default ON so dead tokens never stay in pool after upgrade.
+	ar.VerifyBuildAfterRegister = true
+	if value.AutoRegister.ProbeDelay > 0 {
+		ar.ProbeDelay = config.Duration(value.AutoRegister.ProbeDelay)
+	} else if ar.ProbeDelay <= 0 {
+		ar.ProbeDelay = config.Duration(30 * time.Second)
+	}
+	// Honor explicit disable only when ProbeModel is the sentinel "-" (UI uses toggle → always sends bool).
+	// After first save with new UI, VerifyBuildAfterRegister is authoritative:
+	ar.VerifyBuildAfterRegister = value.AutoRegister.VerifyBuildAfterRegister
+	// If the whole AutoRegister block was empty legacy (no probe fields ever set), keep default ON.
+	if !value.AutoRegister.VerifyBuildAfterRegister && value.AutoRegister.ProbeDelay == 0 && strings.TrimSpace(value.AutoRegister.ProbeModel) == "" && !value.AutoRegister.AlsoImportConsole && !value.AutoRegister.SkipCaptcha {
+		// Ambiguous legacy vs explicit all-false; prefer probe ON (safe for pool quality).
+		ar.VerifyBuildAfterRegister = true
+	}
+	ar.ProbeModel = strings.TrimSpace(value.AutoRegister.ProbeModel)
 	base.AutoRegister = ar
 	return base
 }
@@ -473,6 +493,9 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			YydsJWT: value.AutoRegister.YydsJWT, CaptchaKey: value.AutoRegister.CaptchaKey,
 			CaptchaEndpoint: value.AutoRegister.CaptchaEndpoint, CaptchaTimeout: value.AutoRegister.CaptchaTimeout.Value(),
 			MailTimeout: value.AutoRegister.MailTimeout.Value(), AlsoImportConsole: value.AutoRegister.AlsoImportConsole,
+			VerifyBuildAfterRegister: value.AutoRegister.VerifyBuildAfterRegister,
+			ProbeDelay:               value.AutoRegister.ProbeDelay.Value(),
+			ProbeModel:               value.AutoRegister.ProbeModel,
 			FallbackProxyURL: value.AutoRegister.FallbackProxyURL, SkipCaptcha: value.AutoRegister.SkipCaptcha,
 		},
 	}
@@ -565,6 +588,8 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	}
 	next.AutoRegister.CaptchaEndpoint = strings.TrimSpace(input.AutoRegister.CaptchaEndpoint)
 	next.AutoRegister.AlsoImportConsole = input.AutoRegister.AlsoImportConsole
+	next.AutoRegister.VerifyBuildAfterRegister = input.AutoRegister.VerifyBuildAfterRegister
+	next.AutoRegister.ProbeModel = strings.TrimSpace(input.AutoRegister.ProbeModel)
 	next.AutoRegister.FallbackProxyURL = strings.TrimSpace(input.AutoRegister.FallbackProxyURL)
 	next.AutoRegister.SkipCaptcha = input.AutoRegister.SkipCaptcha
 
@@ -591,6 +616,9 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 		{"autoRegister.registerTimeout", input.AutoRegister.RegisterTimeout, func(value config.Duration) { next.AutoRegister.RegisterTimeout = value }},
 		{"autoRegister.captchaTimeout", input.AutoRegister.CaptchaTimeout, func(value config.Duration) { next.AutoRegister.CaptchaTimeout = value }},
 		{"autoRegister.mailTimeout", input.AutoRegister.MailTimeout, func(value config.Duration) { next.AutoRegister.MailTimeout = value }},
+		{"autoRegister.probeDelay", firstNonEmptyLocal(input.AutoRegister.ProbeDelay, "30s"), func(value config.Duration) {
+			next.AutoRegister.ProbeDelay = value
+		}},
 	}
 	for _, item := range durations {
 		value, err := time.ParseDuration(strings.TrimSpace(item.value))
@@ -663,6 +691,9 @@ func toEditable(cfg config.Config) EditableConfig {
 			CaptchaKeyConfigured: strings.TrimSpace(cfg.AutoRegister.CaptchaKey) != "",
 			CaptchaEndpoint: cfg.AutoRegister.CaptchaEndpoint, CaptchaTimeout: cfg.AutoRegister.CaptchaTimeout.String(),
 			MailTimeout: cfg.AutoRegister.MailTimeout.String(), AlsoImportConsole: cfg.AutoRegister.AlsoImportConsole,
+			VerifyBuildAfterRegister: cfg.AutoRegister.VerifyBuildAfterRegister,
+			ProbeDelay:               cfg.AutoRegister.ProbeDelay.String(),
+			ProbeModel:               cfg.AutoRegister.ProbeModel,
 			FallbackProxyURL: cfg.AutoRegister.FallbackProxyURL, SkipCaptcha: cfg.AutoRegister.SkipCaptcha,
 		},
 	}

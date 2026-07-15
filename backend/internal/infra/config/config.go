@@ -80,8 +80,16 @@ type AutoRegisterConfig struct {
 	CaptchaTimeout         Duration
 	MailTimeout            Duration
 	AlsoImportConsole      bool
-	FallbackProxyURL       string
-	SkipCaptcha            bool
+	// VerifyBuildAfterRegister: after SSO import, convert Web→Build and probe.
+	// 401/403 (or permanent denial) accounts are deleted and do not count as success.
+	// Mirrors HM2899/grokcli-2api post-import probe + kick.
+	VerifyBuildAfterRegister bool
+	// ProbeDelay: settle window before probe (new tokens often need ~30s).
+	ProbeDelay Duration
+	// ProbeModel: optional model id for live chat probe; empty uses /models only then first listed model.
+	ProbeModel        string
+	FallbackProxyURL  string
+	SkipCaptcha       bool
 }
 
 type ServerConfig struct {
@@ -548,6 +556,7 @@ func defaultConfig() Config {
 			YydsAllowPublicDomains: false,
 			CaptchaEndpoint:        "https://api.ez-captcha.com", CaptchaTimeout: Duration(180 * time.Second),
 			MailTimeout: Duration(120 * time.Second), AlsoImportConsole: false, SkipCaptcha: false,
+			VerifyBuildAfterRegister: true, ProbeDelay: Duration(30 * time.Second),
 		},
 	}
 }

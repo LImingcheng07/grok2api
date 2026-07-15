@@ -49,6 +49,9 @@ export type SettingsConfigDTO = {
     captchaTimeout: string;
     mailTimeout: string;
     alsoImportConsole: boolean;
+    verifyBuildAfterRegister?: boolean;
+    probeDelay?: string;
+    probeModel?: string;
     fallbackProxyURL: string;
     skipCaptcha: boolean;
   };
@@ -122,7 +125,11 @@ const settingsConfigValidator = hasShape({
     mailDomainStrategy: isOptional(isString), yydsAllowPublicDomains: isOptional(isBoolean),
     yydsJwt: isOptional(isString), yydsJwtConfigured: isOptional(isBoolean),
     captchaKey: isOptional(isString), captchaKeyConfigured: isBoolean, captchaEndpoint: isString,
-    captchaTimeout: isString, mailTimeout: isString, alsoImportConsole: isBoolean, fallbackProxyURL: isString,
+    captchaTimeout: isString, mailTimeout: isString, alsoImportConsole: isBoolean,
+    verifyBuildAfterRegister: isOptional(isBoolean),
+    probeDelay: isOptional(isString),
+    probeModel: isOptional(isString),
+    fallbackProxyURL: isString,
     skipCaptcha: isOptional(isBoolean),
   }),
 });

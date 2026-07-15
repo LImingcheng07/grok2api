@@ -451,6 +451,21 @@ export function SettingsPage() {
                   <div className="flex h-8 items-center"><Switch id="auto-register-also-console" checked={field.value} onCheckedChange={field.onChange} /></div>
                 )} />
               </SettingsField>
+              <SettingsField controlId="auto-register-verify-build" label={t("settings.autoRegister.verifyBuildAfterRegister")} description={t("settings.autoRegister.verifyBuildAfterRegisterHelp")} className="sm:col-span-2">
+                <Controller control={form.control} name="autoRegister.verifyBuildAfterRegister" render={({ field }) => (
+                  <div className="flex h-8 items-center"><Switch id="auto-register-verify-build" checked={field.value} onCheckedChange={field.onChange} /></div>
+                )} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-probe-delay" label={t("settings.autoRegister.probeDelay")} description={t("settings.autoRegister.probeDelayHelp")}>
+                <Controller control={form.control} name="autoRegister.probeDelay" render={({ field }) => (
+                  <DurationInput id="auto-register-probe-delay" value={field.value} onChange={field.onChange} />
+                )} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-probe-model" label={t("settings.autoRegister.probeModel")} description={t("settings.autoRegister.probeModelHelp")}>
+                <Controller control={form.control} name="autoRegister.probeModel" render={({ field }) => (
+                  <Input id="auto-register-probe-model" value={field.value} onChange={field.onChange} placeholder="grok-4" />
+                )} />
+              </SettingsField>
             </div>
           </SettingsSection>
           </SettingsPane>
