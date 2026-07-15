@@ -65,6 +65,37 @@ func TestInitializeSchemaUpgradesProviderChecksForConsole(t *testing.T) {
 	assertSQLiteUniqueIndexes(t, database, "model_routes", "idx_model_routes_public_id", "uidx_provider_upstream")
 }
 
+func TestInitializeSchemaAddsRecoveryPasswordWithoutLosingWebProfiles(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "legacy-web-profile.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	if err := database.db.Exec(`CREATE TABLE web_account_profiles (
+		account_id integer PRIMARY KEY,
+		tier text NOT NULL,
+		synced_at datetime
+	)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.Exec("INSERT INTO web_account_profiles (account_id, tier) VALUES (?, ?)", 42, "super").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.Migrator().AddColumn(&webAccountProfileModel{}, "EncryptedRecoveryPassword"); err != nil {
+		t.Fatal(err)
+	}
+
+	var profile webAccountProfileModel
+	if err := database.db.First(&profile, "account_id = ?", 42).Error; err != nil {
+		t.Fatal(err)
+	}
+	if profile.Tier != "super" || profile.EncryptedRecoveryPassword != "" {
+		t.Fatalf("legacy Web profile changed during migration: %#v", profile)
+	}
+}
+
 func assertSQLiteUniqueIndexes(t *testing.T, database *Database, table string, expected ...string) {
 	t.Helper()
 	var indexes []struct {

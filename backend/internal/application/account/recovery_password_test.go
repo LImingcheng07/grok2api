@@ -53,6 +53,21 @@ func TestWebRecoveryPasswordIsEncryptedAtRestAndRevealable(t *testing.T) {
 	if revealed != password {
 		t.Fatalf("revealed password = %q", revealed)
 	}
+
+	if _, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		Name: "recoverable@example.com", Email: "recoverable@example.com", SourceKey: "recovery-test",
+		EncryptedAccessToken: "replacement-sso", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	revealed, err = service.RevealWebRecoveryPassword(ctx, web.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revealed != password {
+		t.Fatalf("re-import erased recovery password: %q", revealed)
+	}
 }
 
 func TestWebRecoveryPasswordRejectsNonWebAccount(t *testing.T) {

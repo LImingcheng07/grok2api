@@ -140,10 +140,13 @@ export const settingsSchema = z.object({
     fallbackProxyURL: z.string().trim().max(2048),
     skipCaptcha: z.boolean(),
   }).superRefine((value, context) => {
-    if (value.targetAvailableWeb < value.minAvailableWeb) {
-      context.addIssue({ code: "custom", path: ["targetAvailableWeb"], message: "invalid" });
-    }
-    if (value.enabled) {
+	if (value.targetAvailableWeb < value.minAvailableWeb) {
+	  context.addIssue({ code: "custom", path: ["targetAvailableWeb"], message: "invalid" });
+	}
+	if (value.enabled && !value.verifyBuildAfterRegister) {
+	  context.addIssue({ code: "custom", path: ["verifyBuildAfterRegister"], message: "invalid" });
+	}
+	if (value.enabled) {
       const isYyds = value.mailProvider === "yyds";
       if (!isYyds && !value.mailApiBase.trim()) {
         context.addIssue({ code: "custom", path: ["mailApiBase"], message: "required" });

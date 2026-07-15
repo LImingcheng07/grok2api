@@ -46,9 +46,11 @@ func toAccountDomain(value accountModel) account.Credential {
 	}
 	var webTier account.WebTier
 	var webTierSyncedAt *time.Time
+	var encryptedRecoveryPassword string
 	if value.WebProfile != nil {
 		webTier = account.WebTier(value.WebProfile.Tier)
 		webTierSyncedAt = value.WebProfile.SyncedAt
+		encryptedRecoveryPassword = value.WebProfile.EncryptedRecoveryPassword
 	}
 	return account.Credential{
 		ID: value.ID, Provider: account.Provider(value.Provider), AuthType: authType, Name: value.Name, Email: value.Email,
@@ -60,7 +62,8 @@ func toAccountDomain(value accountModel) account.Credential {
 		MaxConcurrent: value.MaxConcurrent, MinimumRemaining: value.MinimumRemaining, FailureCount: value.FailureCount,
 		CooldownUntil: value.CooldownUntil, LastError: value.LastError, LastUsedAt: value.LastUsedAt,
 		ObservedModel: value.ObservedModel, ObservedModelAt: value.ObservedModelAt, WebTier: webTier, WebTierSyncedAt: webTierSyncedAt,
-		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+		EncryptedRecoveryPassword: encryptedRecoveryPassword,
+		CreatedAt:                 value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }
 
@@ -112,7 +115,10 @@ func fromWebProfileDomain(value account.Credential) *webAccountProfileModel {
 	if tier == "" {
 		tier = account.WebTierAuto
 	}
-	return &webAccountProfileModel{AccountID: value.ID, Tier: string(tier), SyncedAt: value.WebTierSyncedAt}
+	return &webAccountProfileModel{
+		AccountID: value.ID, Tier: string(tier), SyncedAt: value.WebTierSyncedAt,
+		EncryptedRecoveryPassword: value.EncryptedRecoveryPassword,
+	}
 }
 
 func accountIdentity(value account.Credential) string {

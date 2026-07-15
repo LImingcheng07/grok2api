@@ -62,7 +62,8 @@ export type AccountDTO = {
   webTier?: "auto" | "basic" | "super" | "heavy";
   webTierSyncedAt?: string;
   name: string;
-  email?: string;
+	email?: string;
+	recoveryPasswordConfigured: boolean;
   userId?: string;
   teamId?: string;
   enabled: boolean;
@@ -148,7 +149,8 @@ const quotaWindowValidator = hasShape({
 });
 const accountValidator = hasShape({
   id: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), authType: isOneOf("oauth", "sso"), webTier: isOptional(isOneOf("auto", "basic", "super", "heavy")),
-  webTierSyncedAt: isOptional(isString), name: isString, email: isOptional(isString), userId: isOptional(isString), teamId: isOptional(isString),
+	webTierSyncedAt: isOptional(isString), name: isString, email: isOptional(isString), userId: isOptional(isString), teamId: isOptional(isString),
+	recoveryPasswordConfigured: isBoolean,
   enabled: isBoolean, authStatus: isOneOf("active", "reauthRequired"), expiresAt: isOptional(isString), refreshable: isBoolean,
   refreshDueAt: isOptional(isString), lastRefreshAt: isOptional(isString), refreshFailureCount: isNumber,
   lastRefreshErrorCode: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
@@ -384,6 +386,10 @@ export function importConsoleAccounts(files: readonly File[], onProgress?: (valu
 
 export function refreshAccountQuota(id: string): Promise<AccountDTO> {
   return apiRequest(`/api/admin/v1/accounts/${id}/refresh-quota`, { method: "POST" }, decodeAccount);
+}
+
+export function revealRecoveryPassword(id: string): Promise<{ password: string }> {
+	return apiRequest(`/api/admin/v1/accounts/${id}/recovery-password`, {}, createObjectDecoder("recovery password", { password: isString }));
 }
 
 export function exportAccounts(): Promise<Blob> {

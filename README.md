@@ -147,7 +147,7 @@ pnpm dev
 
 ## 协议自动补号（注册机）
 
-本 fork 增加了 **协议注册自动补号**：当 Grok Web 可用账号低于阈值时，网关调度 Python sidecar 通过临时邮箱 +（可选）打码完成 `accounts.x.ai` 注册，提取 SSO 并导入 Web 号池。
+本 fork 增加了 **协议注册自动补号**：当可调度 Grok Build 账号低于目标时，网关调度 Python sidecar 通过临时邮箱 +（可选）打码完成 `accounts.x.ai` 注册，提取 SSO、转为 Build 并通过真实 chat 验活。
 
 | 项目 | 说明 |
 | :-- | :-- |
@@ -156,6 +156,7 @@ pnpm dev
 | 邮箱 | Cloud Temp Mail / YYDS Mail（**YYDS 请用自托管域名**，公共域易被 xAI 拉黑） |
 | 代理 | 仅在 **出口代理** 配 Grok Web 节点；每号随机 IP，无节点可直连或应急备用代理 |
 | 进度 | 状态卡片显示 `phase` / 进度日志；支持 **立即补号一次** / **停止** |
+| 恢复 | 自动生成的邮箱密码加密保存，在 Web 账号池按需显示；401/403 死号直接删除，临时探测故障保留 Web 凭据 |
 
 **完整说明、配置项、排障与阶段表** → [docs/AUTO_REGISTER.md](./docs/AUTO_REGISTER.md)
 

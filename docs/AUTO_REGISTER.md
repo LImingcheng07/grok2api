@@ -16,12 +16,14 @@
 4. 抽出 SSO → 导入 Web → **转 Build** → **chat 验活**（默认模型 `grok-4.5`；401/403 丢弃）  
 5. 验活通过才计入可用 Build，补到目标为止  
 
+注册生成的邮箱密码会使用账号凭据密钥加密保存。管理端 Web 账号池只显示“已保存”状态，管理员主动点击查看时才解密返回，便于 SSO 过期后尝试邮箱密码恢复。
+
 | 模式 | 行为 |
 | :-- | :-- |
 | **立即补号到目标** | 不必开「启用自动补号」；立刻按 `need = 目标 − 当前可用 Build` 开批，补到目标 |
 | **启用自动补号** | 按检查间隔轮询；仅当 `可用 Build < 目标` 时补到目标 |
 
-「注册并发」= 并行注册槽位数，**不是**本批要补的数量。
+「注册并发」= 并行注册槽位数，**不是**一次性追平全部缺口。为限制邮箱、验证码或上游系统故障的损耗，每轮尝试数不超过当前并发数，且最多 5 个；下一检查周期仍有缺口时再继续。
 
 **适用场景**：自用号池保活、批量补 Web SSO（需自备干净出口与可用邮箱域）。  
 **不适用**：绕过 xAI 服务条款的商业滥用；公共临时域在 xAI 侧常被拒信。
@@ -102,6 +104,7 @@ python server.py
 | 启用自动补号 | 定时：可用 Build < 目标时自动补到目标 |
 | 目标可用 Build | 例如 100；水位按 **可调度 Build** 计 |
 | 最低可用 Build | 可选标签，应 ≤ 目标；**不**作为停补条件 |
+| 注册后 Build 验活 | 必须开启；关闭时自动补号配置不会生效 |
 | 探测模型 | 默认 `grok-4.5`（chat 验活；仅 /models 正常不够） |
 | 注册并发 | 1–5，只控制并行，建议先 1 |
 | Sidecar 地址 | 本机 `http://127.0.0.1:8091`；Compose `http://auto-register:8091` |
@@ -111,7 +114,7 @@ python server.py
 | 打码 Key | ez-captcha 等；干净 IP 可试「跳过打码」 |
 | 收信超时 / 单号超时 | 收信建议 ≥ 2m；单号默认约 8m |
 
-保存后点 **立即补号一次** 验证。成功后「最近邮箱 / 最近出口」有值，Web 号池多一个账号。
+保存后点 **立即补号一次** 验证。成功后「最近邮箱 / 最近出口」有值，Web 号池可查看已加密保存的邮箱密码，Build 号池新增一个验活通过的账号。
 
 ---
 
@@ -192,7 +195,7 @@ python server.py
 | `import_web` | 导入号池 |
 | `convert_build` | Web SSO → Build OAuth（验活前置） |
 | `probe_settle` | 入库后等待（默认 30s，对齐 grokcli-2api） |
-| `probe_build` | Build **真实 chat ping**（默认模型 `grok-4.5`，非 `/models`）；chat 401/403 删除该号 |
+| `probe_build` | Build **真实 chat ping**（默认模型 `grok-4.5`，非 `/models`）；401/403 删除 Web/Build，429/5xx/网络错误禁用 Build 并保留 Web/密码 |
 | `done` | 验活通过才算成功 |
 | `failed` / `stopped` | 失败 / 用户停止 |
 
@@ -203,6 +206,8 @@ python server.py
 | `GET` | `/api/admin/v1/auto-register/status` | 状态 |
 | `POST` | `/api/admin/v1/auto-register/run-once` | 立即补号一批 |
 | `POST` | `/api/admin/v1/auto-register/stop` | 停止当前批次 |
+
+账号恢复密码同样只允许管理员访问：`GET /api/admin/v1/accounts/:id/recovery-password`。账号列表不会返回明文密码。
 
 Sidecar：
 
@@ -244,6 +249,7 @@ create_mailbox
 | Turnstile / captcha 拒绝 | 出口质量差或未打码 | 配 ez-captcha；换住宅节点 |
 | `registration completed without SSO` | 注册过了但抽 cookie 失败 | 看日志 `extract_sso`；重试；检查代理稳定性 |
 | `probe_build` / `build probe rejected … 403` | Build **chat** 测活失败（死号 / chat endpoint denied） | **正常**：号已删除不进池。注意：仅 `/models` 正常不够，必须以 chat 为准 |
+| `build probe soft-fail` | chat 遇到 429、5xx 或网络错误，无法确定账号真假 | Build 被禁用且不计入目标；Web SSO、邮箱和密码保留，待上游恢复后人工检查 |
 | 能注册但调用 403，`/models` 却正常 | 旧逻辑只测目录接口 | 升级：验活改为 chat ping（对齐 grokcli-2api）；403 丢弃 |
 | sidecar 连不上 | 地址错或未启动 | `curl http://127.0.0.1:8091/healthz`；Compose 用服务名 |
 | 本地 curl 一直超时 | 系统 `http_proxy` 劫持了 127.0.0.1 | `curl --noproxy '*'` 或设 `NO_PROXY=*` |
@@ -254,6 +260,8 @@ create_mailbox
 
 - 邮箱 Admin Key、打码 Key、YYDS JWT **加密**写入运行设置库；API 只回传「已配置」  
 - 注册成功后的 SSO 进入账号池加密存储  
+- 自动生成的邮箱密码使用同一 AES-256-GCM 凭据密钥加密；列表接口不返回明文
+- 出口日志只记录去除账号、密码和查询参数后的代理地址
 - **不要**把 `config.yaml` 密钥、`proxies.txt` 真代理、SSO 导出、sidecar `sso_output/` 提交 Git  
 - 生产请限制管理端暴露面，补号仅内网调用 sidecar  
 
@@ -270,6 +278,8 @@ create_mailbox
 - Cloud Temp Mail 自动域名、轮询回退、随机前缀  
 - `phase` / `progress` / `recentLogs` 进度跟踪  
 - **注册后 Build 验活**（思路对齐 [HM2899/grokcli-2api](https://github.com/HM2899/grokcli-2api)：settle → probe → 401/403 踢出号池）  
+- 自动生成邮箱密码的加密保留与管理员按需查看
+- 探测软故障隔离与单轮最多 5 个注册尝试
 
 再分发时请保留 MIT 许可证与原作者 **Chenyme** 署名，并链接上游仓库。
 

@@ -3,15 +3,22 @@ package account
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"mime/multipart"
+	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountsyncapp "github.com/chenyme/grok2api/backend/internal/application/accountsync"
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
+	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/gin-gonic/gin"
 )
 
@@ -42,6 +49,58 @@ func TestWriteServiceErrorUsesCredentialLimitCodes(t *testing.T) {
 				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestRecoveryPasswordIsOnlyReturnedByRevealEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "recovery-password-handler.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewAccountRepository(database)
+	created, _, err := repository.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		Name: "recoverable@example.com", Email: "recoverable@example.com", SourceKey: "handler-recovery-test",
+		EncryptedAccessToken: "encrypted-sso", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := accountapp.NewService(repository, nil, nil, nil, nil, cipher, nil)
+	const password = "generated-recovery-secret"
+	if err := service.SetWebRecoveryPassword(ctx, created.ID, password); err != nil {
+		t.Fatal(err)
+	}
+
+	stored, err := repository.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := json.Marshal(newAccountResponse(accountapp.View{Credential: stored}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(listed), `"recoveryPasswordConfigured":true`) || strings.Contains(string(listed), password) {
+		t.Fatalf("account response exposed the wrong password state: %s", listed)
+	}
+
+	recorder := httptest.NewRecorder()
+	requestCtx, _ := gin.CreateTestContext(recorder)
+	requestCtx.Request = httptest.NewRequest(http.MethodGet, "/api/admin/v1/accounts/1/recovery-password", nil)
+	requestCtx.Params = gin.Params{{Key: "id", Value: fmt.Sprint(created.ID)}}
+	NewHandler(service, nil).revealRecoveryPassword(requestCtx)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), password) {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 

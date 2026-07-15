@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link2, MoreHorizontal, Pencil, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
+import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, Eye, EyeOff, FileUp, Link2, MoreHorizontal, Pencil, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -51,6 +51,7 @@ import {
   refreshAllAccountTokens,
   refreshAllConsoleAccountQuotas,
   refreshAllWebAccountQuotas,
+  revealRecoveryPassword,
   startDeviceAuthorization,
   syncWebAccountsToConsole,
   updateAccount,
@@ -626,8 +627,9 @@ export function AccountsPage() {
               <col style={{ width: "15%" }} />
               <col style={{ width: "7%" }} />
               <col style={{ width: "7%" }} />
-              <col style={{ width: provider === "grok_build" ? "30%" : "46%" }} />
-              {provider === "grok_build" ? <col style={{ width: "16%" }} /> : null}
+			  <col style={{ width: provider === "grok_build" ? "30%" : provider === "grok_web" ? "28%" : "46%" }} />
+			  {provider === "grok_build" ? <col style={{ width: "16%" }} /> : null}
+			  {provider === "grok_web" ? <col style={{ width: "18%" }} /> : null}
               <col style={{ width: "18%" }} />
               <col style={{ width: "4%" }} />
             </colgroup>
@@ -637,14 +639,15 @@ export function AccountsPage() {
                 <SortableTableHead field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("accounts.account")}</SortableTableHead>
                 <SortableTableHead field="type" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort} className="whitespace-nowrap">{t("accounts.type")}</SortableTableHead>
                 <SortableTableHead field="status" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort} className="whitespace-nowrap">{t("accounts.status")}</SortableTableHead>
-                <TableHead className="whitespace-nowrap">{t("accounts.quota")}</TableHead>
-                {provider === "grok_build" ? <TableHead className="whitespace-nowrap pl-4">{t("accountCredential.label")}</TableHead> : null}
+			  <TableHead className="whitespace-nowrap">{t("accounts.quota")}</TableHead>
+			  {provider === "grok_build" ? <TableHead className="whitespace-nowrap pl-4">{t("accountCredential.label")}</TableHead> : null}
+			  {provider === "grok_web" ? <TableHead className="whitespace-nowrap">{t("accounts.recoveryPassword")}</TableHead> : null}
                 <SortableTableHead field="createdAt" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort} className="whitespace-nowrap">{t("accounts.createdAt")}</SortableTableHead>
                 <TableActionHead />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {accountsQuery.isPending ? <TableLoadingRow colSpan={provider === "grok_build" ? 8 : 7} /> : result?.items.map((account) => {
+			  {accountsQuery.isPending ? <TableLoadingRow colSpan={provider === "grok_build" || provider === "grok_web" ? 8 : 7} /> : result?.items.map((account) => {
                 const accountDetail = account.email ?? account.userId ?? account.teamId;
                 const showAccountDetail = accountDetail?.trim().toLocaleLowerCase() !== account.name.trim().toLocaleLowerCase();
                 const linkedProviderLabel = account.linkedProvider === "grok_build" ? t("models.providerGrokBuild") : account.linkedProvider === "grok_web" ? t("models.providerGrokWeb") : t("console.name");
@@ -674,14 +677,15 @@ export function AccountsPage() {
                     <TableCell className="text-center whitespace-nowrap">{provider === "grok_web" ? <WebAccountType tier={account.webTier} /> : provider === "grok_console" ? <AccountTypeText label={t("console.type")} variant="free" /> : <AccountType quota={account.quota} />}</TableCell>
                     <TableCell className="text-center whitespace-nowrap"><AccountStatus account={account} /></TableCell>
                     <TableCell>{provider === "grok_web" ? <WebQuota windows={account.quotaWindows ?? []} locale={i18n.language} tier={account.webTier} /> : provider === "grok_console" ? <ConsoleQuota windows={account.quotaWindows ?? []} locale={i18n.language} /> : <AccountQuota quota={account.quota} billing={account.billing} locale={i18n.language} />}</TableCell>
-                    {provider === "grok_build" ? <TableCell className="whitespace-nowrap pl-4 text-xs">
+				{provider === "grok_build" ? <TableCell className="whitespace-nowrap pl-4 text-xs">
                       {account.refreshable ? (
                         <Tooltip>
                           <TooltipTrigger asChild><span tabIndex={0} className="cursor-help font-medium text-emerald-700 dark:text-emerald-300">{t("accountCredential.autoRefresh")}</span></TooltipTrigger>
                           <TooltipContent>{account.expiresAt ? t("accountCredential.expiresAt", { time: formatDateTime(account.expiresAt, i18n.language) }) : t("accountCredential.expiryUnknown")}</TooltipContent>
                         </Tooltip>
                       ) : <span className="font-medium text-amber-700 dark:text-amber-300">{t("accountCredential.noAutoRefresh")}</span>}
-                    </TableCell> : null}
+				</TableCell> : null}
+				{provider === "grok_web" ? <TableCell><RecoveryPasswordCell account={account} /></TableCell> : null}
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{formatDateTime(account.createdAt, i18n.language)}</TableCell>
                     <TableActionCell>
                       <DropdownMenu>
@@ -936,4 +940,44 @@ function AccountStatus({ account }: { account: AccountDTO }) {
     return <Badge variant="secondary" className="bg-amber-500/10 text-amber-700 dark:text-amber-300">{t("accounts.statusCooldown")}</Badge>;
   }
   return <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">{t("accounts.statusActive")}</Badge>;
+}
+
+function RecoveryPasswordCell({ account }: { account: AccountDTO }) {
+	const { t } = useTranslation();
+	const [password, setPassword] = useState<string>();
+	const [loading, setLoading] = useState(false);
+
+	async function togglePassword() {
+		if (password !== undefined) {
+			setPassword(undefined);
+			return;
+		}
+		setLoading(true);
+		try {
+			const result = await revealRecoveryPassword(account.id);
+			setPassword(result.password);
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : t("apiErrors.requestFailed"));
+		} finally {
+			setLoading(false);
+		}
+	}
+
+	if (!account.recoveryPasswordConfigured) {
+		return <span className="text-xs text-muted-foreground">{t("accounts.recoveryPasswordUnavailable")}</span>;
+	}
+	return (
+		<div className="flex min-w-0 items-center gap-1">
+			<code className="min-w-0 flex-1 truncate text-xs" title={password}>{password ?? "••••••••••••"}</code>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<Button type="button" variant="ghost" size="icon" className="size-7 shrink-0" disabled={loading} onClick={() => void togglePassword()} aria-label={password === undefined ? t("accounts.revealRecoveryPassword") : t("accounts.hideRecoveryPassword")}>
+						{password === undefined ? <Eye /> : <EyeOff />}
+					</Button>
+				</TooltipTrigger>
+				<TooltipContent>{password === undefined ? t("accounts.revealRecoveryPassword") : t("accounts.hideRecoveryPassword")}</TooltipContent>
+			</Tooltip>
+			{password !== undefined ? <CopyButton value={password} copyLabel={t("accounts.copyRecoveryPassword")} /> : null}
+		</div>
+	);
 }

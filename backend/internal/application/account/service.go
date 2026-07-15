@@ -23,17 +23,18 @@ import (
 )
 
 var (
-	ErrDevicePending  = errors.New("Device OAuth 等待用户授权")
-	ErrDeviceSlowDown = errors.New("Device OAuth 轮询过快")
-	ErrDeviceDenied   = errors.New("Device OAuth 已拒绝或过期")
-	ErrInvalidFilter  = errors.New("账号筛选条件无效")
-	ErrInvalidInput   = errors.New("账号参数无效")
-	ErrInvalidImport  = errors.New("账号凭据格式无效")
-	ErrImportLimit    = errors.New("导入账号数量超过限制")
-	ErrExportLimit    = errors.New("导出账号数量超过限制")
-	ErrNotFound       = errors.New("账号不存在")
-	ErrUnsupported    = errors.New("账号来源不支持该操作")
-	ErrConversionBusy = errors.New("账号正在转换为 Grok Build")
+	ErrDevicePending               = errors.New("Device OAuth 等待用户授权")
+	ErrDeviceSlowDown              = errors.New("Device OAuth 轮询过快")
+	ErrDeviceDenied                = errors.New("Device OAuth 已拒绝或过期")
+	ErrInvalidFilter               = errors.New("账号筛选条件无效")
+	ErrInvalidInput                = errors.New("账号参数无效")
+	ErrInvalidImport               = errors.New("账号凭据格式无效")
+	ErrImportLimit                 = errors.New("导入账号数量超过限制")
+	ErrExportLimit                 = errors.New("导出账号数量超过限制")
+	ErrNotFound                    = errors.New("账号不存在")
+	ErrUnsupported                 = errors.New("账号来源不支持该操作")
+	ErrConversionBusy              = errors.New("账号正在转换为 Grok Build")
+	ErrRecoveryPasswordUnavailable = errors.New("账号没有可用的恢复密码")
 )
 
 var ErrCredentialRefreshPermanent = errors.New("OAuth refresh token 已永久失效")
@@ -432,6 +433,78 @@ func (s *Service) Get(ctx context.Context, id uint64) (View, error) {
 		return View{}, err
 	}
 	return view, nil
+}
+
+func (s *Service) ValidateRecoveryPasswordProvider(providerValue accountdomain.Provider) error {
+	if providerValue != accountdomain.ProviderWeb {
+		return fmt.Errorf("%w: 仅 Grok Web 账号支持恢复密码", ErrUnsupported)
+	}
+	return nil
+}
+
+// SetWebRecoveryPassword encrypts an auto-created account password with the
+// existing credential key before persisting it in the Web profile.
+func (s *Service) SetWebRecoveryPassword(ctx context.Context, id uint64, password string) error {
+	password = strings.TrimSpace(password)
+	if password == "" || len(password) > 512 {
+		return fmt.Errorf("%w: 恢复密码长度无效", ErrInvalidInput)
+	}
+	value, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		return mapRepositoryError(err)
+	}
+	if err := s.ValidateRecoveryPasswordProvider(value.Provider); err != nil {
+		return err
+	}
+	if s.cipher == nil {
+		return errors.New("凭据加密器未初始化")
+	}
+	encrypted, err := s.cipher.Encrypt(password)
+	if err != nil {
+		return fmt.Errorf("加密恢复密码: %w", err)
+	}
+	value.EncryptedRecoveryPassword = encrypted
+	_, err = s.accounts.Update(ctx, value)
+	return mapRepositoryError(err)
+}
+
+// RevealWebRecoveryPassword decrypts one password on demand for an
+// authenticated administrator. List responses never include plaintext.
+func (s *Service) RevealWebRecoveryPassword(ctx context.Context, id uint64) (string, error) {
+	value, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		return "", mapRepositoryError(err)
+	}
+	if err := s.ValidateRecoveryPasswordProvider(value.Provider); err != nil {
+		return "", err
+	}
+	if value.EncryptedRecoveryPassword == "" {
+		return "", ErrRecoveryPasswordUnavailable
+	}
+	if s.cipher == nil {
+		return "", errors.New("凭据加密器未初始化")
+	}
+	password, err := s.cipher.Decrypt(value.EncryptedRecoveryPassword)
+	if err != nil {
+		return "", fmt.Errorf("解密恢复密码: %w", err)
+	}
+	return password, nil
+}
+
+// QuarantineBuildAccount keeps credentials for manual recovery while removing
+// a transiently unverified Build account from the schedulable pool.
+func (s *Service) QuarantineBuildAccount(ctx context.Context, id uint64, reason string) error {
+	value, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		return mapRepositoryError(err)
+	}
+	if value.Provider != accountdomain.ProviderBuild {
+		return fmt.Errorf("%w: 仅 Grok Build 账号可隔离", ErrUnsupported)
+	}
+	value.Enabled = false
+	value.LastError = truncateProbeText(reason, 512)
+	_, err = s.accounts.Update(ctx, value)
+	return mapRepositoryError(err)
 }
 
 func (s *Service) ObserveResponseModel(ctx context.Context, id uint64, model string) error {

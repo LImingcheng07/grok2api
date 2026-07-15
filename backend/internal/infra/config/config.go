@@ -87,9 +87,9 @@ type AutoRegisterConfig struct {
 	// ProbeDelay: settle window before probe (new tokens often need ~30s).
 	ProbeDelay Duration
 	// ProbeModel: optional model id for live chat probe; empty uses /models only then first listed model.
-	ProbeModel        string
-	FallbackProxyURL  string
-	SkipCaptcha       bool
+	ProbeModel       string
+	FallbackProxyURL string
+	SkipCaptcha      bool
 }
 
 type ServerConfig struct {
@@ -483,6 +483,19 @@ func (c Config) Validate() error {
 	}
 	if c.ClientKeyDefaults.RPMLimit < 1 || c.ClientKeyDefaults.RPMLimit > clientkeydomain.MaxRPMLimit || c.ClientKeyDefaults.MaxConcurrent < 1 || c.ClientKeyDefaults.MaxConcurrent > clientkeydomain.MaxConcurrent {
 		return errors.New("clientKeyDefaults 超出允许范围")
+	}
+	if c.AutoRegister.MinAvailableWeb < 0 || c.AutoRegister.MinAvailableWeb > 10000 ||
+		c.AutoRegister.TargetAvailableWeb < c.AutoRegister.MinAvailableWeb || c.AutoRegister.TargetAvailableWeb > 10000 ||
+		c.AutoRegister.MaxConcurrent < 1 || c.AutoRegister.MaxConcurrent > 5 {
+		return errors.New("autoRegister 水位或并发配置无效")
+	}
+	if c.AutoRegister.Enabled && !c.AutoRegister.VerifyBuildAfterRegister {
+		return errors.New("启用自动补号时必须开启注册后 Build 验活")
+	}
+	if c.AutoRegister.CheckInterval.Value() < 15*time.Second || c.AutoRegister.CheckInterval.Value() > 24*time.Hour ||
+		c.AutoRegister.RegisterTimeout.Value() < time.Minute || c.AutoRegister.RegisterTimeout.Value() > 30*time.Minute ||
+		c.AutoRegister.ProbeDelay.Value() < 0 || c.AutoRegister.ProbeDelay.Value() > 10*time.Minute {
+		return errors.New("autoRegister 时长配置无效")
 	}
 	return nil
 }

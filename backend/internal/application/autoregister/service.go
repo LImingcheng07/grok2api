@@ -47,9 +47,9 @@ type Service struct {
 }
 
 type Status struct {
-	Enabled            bool      `json:"enabled"`
-	Running            bool      `json:"running"`
-	Stopping           bool      `json:"stopping"`
+	Enabled  bool `json:"enabled"`
+	Running  bool `json:"running"`
+	Stopping bool `json:"stopping"`
 	// AvailableBuild is the pool metric for refill (schedulable Grok Build accounts).
 	AvailableBuild int64 `json:"availableBuild"`
 	// AvailableWeb kept for diagnostics (register still produces Web SSO first).
@@ -84,6 +84,14 @@ type registerResponse struct {
 	Phase    string   `json:"phase"`
 	Progress string   `json:"progress"`
 }
+
+type probeDisposition uint8
+
+const (
+	probeKeep probeDisposition = iota
+	probeDelete
+	probeQuarantine
+)
 
 func NewService(logger *slog.Logger, settings *settingsapp.Service, accounts *accountapp.Service, egress repository.EgressRepository, cipher *security.Cipher) *Service {
 	if logger == nil {
@@ -175,6 +183,10 @@ func (s *Service) tick(ctx context.Context, force bool) {
 		})
 		return
 	}
+	if err := validateRefillConfig(cfg); err != nil {
+		s.fail("config", err.Error(), nil)
+		return
+	}
 	if s.busy.Load() {
 		return
 	}
@@ -222,9 +234,8 @@ func (s *Service) tick(ctx context.Context, force bool) {
 		workers = 5
 	}
 
-	// need = how many successful Build accounts we still want this batch.
-	// workers = parallel register slots only (not batch size).
-	const maxRegisterPerBatch = 500
+	// Keep each pass bounded. A systemic mail/captcha/provider failure must not
+	// consume hundreds of addresses before the operator can react.
 	gap := int(int64(target) - availableBuild)
 	if gap < 0 {
 		gap = 0
@@ -248,7 +259,7 @@ func (s *Service) tick(ctx context.Context, force bool) {
 		return
 	}
 
-	need := gap
+	need := batchAttemptCount(gap, workers)
 	if force && need < 1 {
 		// Already at/above target: manual click is a no-op fill (do not force extra over-target).
 		s.setStatus(func(st *Status) {
@@ -270,10 +281,6 @@ func (s *Service) tick(ctx context.Context, force bool) {
 	if need < 1 {
 		return
 	}
-	if need > maxRegisterPerBatch {
-		s.logger.Info("auto_register_batch_capped", "need", need, "cap", maxRegisterPerBatch, "force", force)
-		need = maxRegisterPerBatch
-	}
 	if workers > need {
 		workers = need
 	}
@@ -290,6 +297,7 @@ func (s *Service) tick(ctx context.Context, force bool) {
 			need, workers, availableBuild, availableWeb, target, force,
 		)
 		st.StartedAt = time.Now().UTC()
+		st.LastError = ""
 		st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf(
 			"[phase:batch_start] need=%d workers=%d availableBuild=%d availableWeb=%d min=%d target=%d force=%v",
 			need, workers, availableBuild, availableWeb, minAvail, target, force,
@@ -330,6 +338,7 @@ func (s *Service) tick(ctx context.Context, force bool) {
 					liveBuild := sum.Providers[string(accountdomain.ProviderBuild)].Available
 					if liveBuild >= int64(liveTarget) {
 						s.setStatus(func(st *Status) {
+							st.Phase = "skip"
 							st.AvailableBuild = liveBuild
 							st.AvailableWeb = sum.Providers[string(accountdomain.ProviderWeb)].Available
 							st.Progress = fmt.Sprintf("skip: availableBuild=%d already >= target=%d", liveBuild, liveTarget)
@@ -363,15 +372,49 @@ func (s *Service) tick(ctx context.Context, force bool) {
 		})
 	}
 	s.setStatus(func(st *Status) {
-		if st.Phase != "done" && st.Phase != "failed" && st.Phase != "skip" {
-			st.Phase = "idle"
-			st.Progress = "batch finished"
-		}
+		finishBatchStatus(st)
 		st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf(
 			"[phase:batch_done] batch finished availableBuild=%d target=%d",
 			st.AvailableBuild, st.TargetAvailableWeb,
 		))
 	})
+}
+
+func validateRefillConfig(cfg config.AutoRegisterConfig) error {
+	if !cfg.VerifyBuildAfterRegister {
+		return fmt.Errorf("自动补号必须开启注册后 Build 验活")
+	}
+	return nil
+}
+
+func batchAttemptCount(gap, workers int) int {
+	if gap <= 0 || workers <= 0 {
+		return 0
+	}
+	if gap < workers {
+		return gap
+	}
+	return workers
+}
+
+func decideProbeDisposition(probe accountapp.BuildProbeResult, err error) probeDisposition {
+	if err != nil {
+		return probeQuarantine
+	}
+	if probe.OK {
+		return probeKeep
+	}
+	if probe.DeadToken || probe.StatusCode == http.StatusUnauthorized || probe.StatusCode == http.StatusForbidden {
+		return probeDelete
+	}
+	return probeQuarantine
+}
+
+func finishBatchStatus(st *Status) {
+	if st.LastError == "" && st.Phase != "done" && st.Phase != "skip" {
+		st.Phase = "idle"
+		st.Progress = "batch finished"
+	}
 }
 
 func (s *Service) registerOne(ctx context.Context, cfg config.AutoRegisterConfig, index int) {
@@ -511,7 +554,7 @@ func (s *Service) registerOne(ctx context.Context, cfg config.AutoRegisterConfig
 			msg = truncate(string(raw), 240)
 		}
 		phase := firstNonEmpty(result.Phase, lastPhaseFromLogs(result.Logs), "failed")
-		s.fail(phase, msg, result.Logs)
+		s.fail(phase, msg, nil)
 		return
 	}
 	sso := strings.TrimSpace(result.SSO)
@@ -540,6 +583,26 @@ func (s *Service) registerOne(ctx context.Context, cfg config.AutoRegisterConfig
 		s.fail("import_web", "import web: "+err.Error(), result.Logs)
 		return
 	}
+	if strings.TrimSpace(result.Password) == "" {
+		s.fail("save_recovery", "registration returned no recovery password", nil)
+		return
+	}
+	for _, webID := range importResult.AccountIDs {
+		if err := s.accounts.SetWebRecoveryPassword(reqCtx, webID, result.Password); err != nil {
+			s.fail("save_recovery", "save recovery password: "+err.Error(), nil)
+			return
+		}
+	}
+
+	// Post-import Build probe (HM2899/grokcli-2api style): convert → settle → probe → drop 403.
+	// Only accounts that pass stay in the schedulable pool and count as success.
+	if len(importResult.AccountIDs) > 0 {
+		if err := s.verifyImportedBuild(reqCtx, cfg, index, name, proxyLabel, importResult.AccountIDs, result.Logs); err != nil {
+			return
+		}
+	}
+	// Console uses the same SSO, but is imported only after Build verification so
+	// rejected 403 registrations cannot leave orphan Console rows behind.
 	if cfg.AlsoImportConsole {
 		consoleDoc, _ := json.Marshal(map[string]any{
 			"provider": string(accountdomain.ProviderConsole),
@@ -550,14 +613,6 @@ func (s *Service) registerOne(ctx context.Context, cfg config.AutoRegisterConfig
 		})
 		if _, err := s.accounts.ImportConsoleCredentials(reqCtx, consoleDoc); err != nil {
 			s.logger.Warn("auto_register_console_import_failed", "error", err, "email", name)
-		}
-	}
-
-	// Post-import Build probe (HM2899/grokcli-2api style): convert → settle → probe → drop 403.
-	// Only accounts that pass stay in the schedulable pool and count as success.
-	if cfg.VerifyBuildAfterRegister && len(importResult.AccountIDs) > 0 {
-		if err := s.verifyImportedBuild(reqCtx, cfg, index, name, proxyLabel, importResult.AccountIDs, result.Logs); err != nil {
-			return
 		}
 	}
 
@@ -574,7 +629,7 @@ func (s *Service) registerOne(ctx context.Context, cfg config.AutoRegisterConfig
 	s.logger.Info("auto_register_success", "email", name, "proxy", proxyLabel, "imported", importResult.Created+importResult.Updated, "account_ids", importResult.AccountIDs)
 }
 
-// verifyImportedBuild converts Web SSO → Build, waits for settle, probes /models.
+// verifyImportedBuild converts Web SSO → Build, waits for settle, then probes with a real chat request.
 // On 401/403 (dead token) the account pair is deleted and the register job fails.
 func (s *Service) verifyImportedBuild(ctx context.Context, cfg config.AutoRegisterConfig, index int, name, proxyLabel string, webIDs []uint64, logs []string) error {
 	s.setStatus(func(st *Status) {
@@ -584,13 +639,11 @@ func (s *Service) verifyImportedBuild(ctx context.Context, cfg config.AutoRegist
 	})
 	convert, err := s.accounts.ConvertWebAccountsToBuild(ctx, webIDs)
 	if err != nil {
-		s.accounts.DropRegisteredAccounts(ctx, webIDs, 0, "convert failed: "+err.Error())
 		s.fail("convert_build", "convert to build: "+err.Error(), logs)
 		return err
 	}
 	if convert.Failed > 0 || len(convert.BuildAccountIDs) == 0 {
 		msg := fmt.Sprintf("convert to build failed (failed=%d build_ids=%d)", convert.Failed, len(convert.BuildAccountIDs))
-		s.accounts.DropRegisteredAccounts(ctx, webIDs, 0, msg)
 		s.fail("convert_build", msg, logs)
 		return fmt.Errorf("%s", msg)
 	}
@@ -627,20 +680,19 @@ func (s *Service) verifyImportedBuild(ctx context.Context, cfg config.AutoRegist
 		st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf("[phase:probe_build] #%d email=%s build_id=%d", index, name, buildID))
 	})
 	probe, err := s.accounts.ProbeBuildAccount(ctx, buildID, cfg.ProbeModel)
-	if err != nil {
-		s.accounts.DropRegisteredAccounts(ctx, webIDs, buildID, "probe error: "+err.Error())
-		s.fail("probe_build", "probe build: "+err.Error(), logs)
-		return err
-	}
-	if !probe.OK {
+	disposition := decideProbeDisposition(probe, err)
+	if disposition != probeKeep {
 		reason := probe.Error
+		if err != nil {
+			reason = err.Error()
+		}
 		if reason == "" {
 			reason = fmt.Sprintf("probe failed status=%d", probe.StatusCode)
 		}
-		// 401/403 / permanent denial → delete (不要 403 号). Network/5xx keep account, no success credit.
-		drop := probe.DeadToken || probe.StatusCode == 401 || probe.StatusCode == 403
-		if drop {
-			s.accounts.DropRegisteredAccounts(ctx, webIDs, buildID, reason)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if disposition == probeDelete {
+			s.accounts.DropRegisteredAccounts(cleanupCtx, webIDs, buildID, reason)
 			msg := fmt.Sprintf("build probe rejected (status=%d dead=%v): %s", probe.StatusCode, probe.DeadToken, reason)
 			s.fail("probe_build", msg, logs)
 			s.logger.Warn("auto_register_probe_rejected",
@@ -648,7 +700,11 @@ func (s *Service) verifyImportedBuild(ctx context.Context, cfg config.AutoRegist
 			)
 			return fmt.Errorf("%s", msg)
 		}
-		// Soft fail (429/5xx/network): leave in pool, do not count as register success.
+		// Soft failures retain recoverable Web credentials, but the Build account is
+		// disabled so it cannot satisfy the available Build target.
+		if quarantineErr := s.accounts.QuarantineBuildAccount(cleanupCtx, buildID, reason); quarantineErr != nil {
+			s.logger.Warn("auto_register_probe_quarantine_failed", "build_id", buildID, "error", quarantineErr)
+		}
 		s.fail("probe_build", fmt.Sprintf("build probe soft-fail status=%d: %s", probe.StatusCode, reason), logs)
 		return fmt.Errorf("build probe soft-fail: %s", reason)
 	}

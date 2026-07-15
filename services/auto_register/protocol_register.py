@@ -849,6 +849,25 @@ def _normalize_proxy(proxy: str) -> str:
     return proxy
 
 
+def _safe_proxy_label(proxy: str) -> str:
+    """Return a log-safe proxy endpoint without userinfo or query secrets."""
+    proxy = str(proxy or "").strip()
+    if not proxy:
+        return "direct"
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+
+        parsed = urlsplit(proxy)
+        host = parsed.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, "", "")) or "proxy"
+    except (TypeError, ValueError):
+        return "proxy"
+
+
 def register_one(
     config: dict,
     *,
@@ -882,7 +901,7 @@ def register_one(
     if not proxy:
         _phase(emit, "pick_proxy", f"#{index} no proxy from gateway (direct)")
     else:
-        _phase(emit, "pick_proxy", f"#{index} proxy={proxy}")
+        _phase(emit, "pick_proxy", f"#{index} proxy={_safe_proxy_label(proxy)}")
 
     _phase(emit, "create_mailbox", f"#{index} creating mailbox")
     email, receiver = create_mailbox(config, emit=emit)

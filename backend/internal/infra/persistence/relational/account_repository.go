@@ -616,6 +616,17 @@ func saveAccountRelations(tx *gorm.DB, value account.Credential, accountID uint6
 		return err
 	}
 	if profile := fromWebProfileDomain(value); profile != nil {
+		if profile.EncryptedRecoveryPassword == "" {
+			var existing webAccountProfileModel
+			err := tx.Select("encrypted_recovery_password").Where("account_id = ?", accountID).First(&existing).Error
+			switch {
+			case err == nil:
+				profile.EncryptedRecoveryPassword = existing.EncryptedRecoveryPassword
+			case errors.Is(err, gorm.ErrRecordNotFound):
+			default:
+				return err
+			}
+		}
 		return tx.Save(profile).Error
 	}
 	return tx.Where("account_id = ?", accountID).Delete(&webAccountProfileModel{}).Error
