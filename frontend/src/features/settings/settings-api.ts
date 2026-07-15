@@ -61,6 +61,7 @@ export type AutoRegisterStatusDTO = {
   enabled: boolean;
   running: boolean;
   stopping?: boolean;
+  availableBuild?: number;
   availableWeb: number;
   minAvailableWeb: number;
   targetAvailableWeb: number;

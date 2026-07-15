@@ -557,6 +557,7 @@ func defaultConfig() Config {
 			CaptchaEndpoint:        "https://api.ez-captcha.com", CaptchaTimeout: Duration(180 * time.Second),
 			MailTimeout: Duration(120 * time.Second), AlsoImportConsole: false, SkipCaptcha: false,
 			VerifyBuildAfterRegister: true, ProbeDelay: Duration(30 * time.Second),
+			ProbeModel: "grok-4.5",
 		},
 	}
 }

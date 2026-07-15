@@ -8,14 +8,20 @@
 
 ## 1. 它是做什么的
 
-当 **Grok Web 可用账号数** 低于你设定的阈值时，网关会：
+当 **可用 Grok Build 账号数** 低于 **目标可用 Build** 时，网关会：
 
 1. 从统一 **出口代理池**（Grok Web 节点）随机选一个 IP（或直连 / 应急代理）  
 2. 调用 Python **sidecar**（默认 `:8091`）走 `accounts.x.ai` 协议注册  
 3. 用临时邮箱收验证码，可选 ez-captcha 过 Turnstile  
-4. 抽出 SSO，导入 Web 号池（可选同步 Console 池）
+4. 抽出 SSO → 导入 Web → **转 Build** → **chat 验活**（默认模型 `grok-4.5`；401/403 丢弃）  
+5. 验活通过才计入可用 Build，补到目标为止  
 
-也可以在管理端点 **立即补号一次**，不必打开「启用自动补号」调度。
+| 模式 | 行为 |
+| :-- | :-- |
+| **立即补号到目标** | 不必开「启用自动补号」；立刻按 `need = 目标 − 当前可用 Build` 开批，补到目标 |
+| **启用自动补号** | 按检查间隔轮询；仅当 `可用 Build < 目标` 时补到目标 |
+
+「注册并发」= 并行注册槽位数，**不是**本批要补的数量。
 
 **适用场景**：自用号池保活、批量补 Web SSO（需自备干净出口与可用邮箱域）。  
 **不适用**：绕过 xAI 服务条款的商业滥用；公共临时域在 xAI 侧常被拒信。
@@ -93,9 +99,11 @@ python server.py
 
 | 配置项 | 建议 |
 | :-- | :-- |
-| 启用自动补号 | 需要定时保号时打开；仅测一次可只点「立即补号一次」 |
-| 最低 / 目标可用 Web | 例如最低 5、目标 10 |
-| 注册并发 | 1–5，建议先 1 |
+| 启用自动补号 | 定时：可用 Build < 目标时自动补到目标 |
+| 目标可用 Build | 例如 100；水位按 **可调度 Build** 计 |
+| 最低可用 Build | 可选标签，应 ≤ 目标；**不**作为停补条件 |
+| 探测模型 | 默认 `grok-4.5`（chat 验活；仅 /models 正常不够） |
+| 注册并发 | 1–5，只控制并行，建议先 1 |
 | Sidecar 地址 | 本机 `http://127.0.0.1:8091`；Compose `http://auto-register:8091` |
 | 邮箱服务商 | Cloud Temp Mail 或 YYDS |
 | 临时邮箱 API / Key | 见下文「邮箱」 |
@@ -184,7 +192,7 @@ python server.py
 | `import_web` | 导入号池 |
 | `convert_build` | Web SSO → Build OAuth（验活前置） |
 | `probe_settle` | 入库后等待（默认 30s，对齐 grokcli-2api） |
-| `probe_build` | Build **真实 chat ping**（非 `/models`）；chat 401/403 删除该号 |
+| `probe_build` | Build **真实 chat ping**（默认模型 `grok-4.5`，非 `/models`）；chat 401/403 删除该号 |
 | `done` | 验活通过才算成功 |
 | `failed` / `stopped` | 失败 / 用户停止 |
 
@@ -228,7 +236,8 @@ create_mailbox
 
 | 现象 | 可能原因 | 处理 |
 | :-- | :-- | :-- |
-| 只有 `batch_start` → `batch_done`，无 `pick_proxy` / `create_mailbox` | **旧逻辑**：`need=1 force=true` 且运行时 `available ≥ target` 时 worker 静默跳过。注意：日志里的 `need` 用的是**网关内存中的 target**，不是你刚在输入框里打的数字。若你填了 500/1000 但仍出现 `need=1`，说明运行时 target 仍很小（默认 10 或库里是 1），保存未生效或看的是旧状态行 | 1）看状态行 `可用 / min → target` 是否真是 500→1000；2）保存后刷新再点补号；3）升级网关：立即补号按「注册并发」固定补 N 个，**不再**用 target 门禁；新日志含 `available/min/target` |
+| 只有 `batch_start` → `batch_done`，无 `pick_proxy` | 运行时 `availableBuild ≥ target`（已达标）或 target 未保存成功 | 看状态行 **可用 Build / 目标**；保存后刷新；`need` 应为 `target − availableBuild` |
+| 立即补号只补了 1 个 | **旧逻辑**把 need 当成注册并发 | 升级：need = 目标 − 可用 Build；并发只是并行度 |
 | `timeout waiting for … email code` | 域名被拒信 / 邮箱 API 慢 | YYDS 换自托管域；加长收信超时；查邮箱后台是否有信 |
 | `Cloud Temp Mail create failed` | 域名无效或 Key 错 | 开自动读域；检查 API Base / Auth / 路径 |
 | TLS / `WRONG_VERSION_NUMBER` | 代理坏或源 IP 未加白 | 换节点；供应商加白；确认不是直连污染 DNS |

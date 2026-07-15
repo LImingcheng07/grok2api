@@ -233,7 +233,7 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
       alsoImportConsole: config.autoRegister?.alsoImportConsole ?? false,
       verifyBuildAfterRegister: config.autoRegister?.verifyBuildAfterRegister ?? true,
       probeDelay: parseDuration(config.autoRegister?.probeDelay || "30s"),
-      probeModel: config.autoRegister?.probeModel ?? "",
+      probeModel: config.autoRegister?.probeModel || "grok-4.5",
       fallbackProxyURL: config.autoRegister?.fallbackProxyURL ?? "",
       skipCaptcha: config.autoRegister?.skipCaptcha ?? false,
     },

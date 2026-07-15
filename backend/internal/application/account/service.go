@@ -967,18 +967,12 @@ func (s *Service) ProbeBuildAccount(ctx context.Context, buildID uint64, probeMo
 }
 
 func resolveProbeModel(ctx context.Context, s *Service, value accountdomain.Credential) string {
-	// Prefer configured default; fall back to ListModels first id, then grok-3 (widely present).
-	const fallback = "grok-3"
-	if catalog, ok := s.providers.Models(accountdomain.ProviderBuild); ok {
-		if models, err := catalog.ListModels(ctx, value); err == nil {
-			for _, m := range models {
-				if strings.TrimSpace(m) != "" {
-					return strings.TrimSpace(m)
-				}
-			}
-		}
-	}
-	return fallback
+	// Always prefer grok-4.5 for live chat probe (many tokens list models but deny 4.5 chat).
+	// Do NOT fall back to the first ListModels id — that reintroduces false "alive" accounts.
+	_ = ctx
+	_ = s
+	_ = value
+	return "grok-4.5"
 }
 
 func classifyBuildProbeError(status int, message string) (int, bool) {

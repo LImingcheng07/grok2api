@@ -263,11 +263,12 @@ export function SettingsPage() {
                   : null}
               </div>
               <div>
-                {t("settings.autoRegister.available")}: {autoStatusQuery.data?.availableWeb ?? "-"}
+                {t("settings.autoRegister.availableBuild")}: {autoStatusQuery.data?.availableBuild ?? "-"}
                 {" · "}
-                {t("settings.autoRegister.runtimeThreshold")}: min {autoStatusQuery.data?.minAvailableWeb ?? "-"} → target {autoStatusQuery.data?.targetAvailableWeb ?? "-"}
-                {form.watch("autoRegister.minAvailableWeb") !== autoStatusQuery.data?.minAvailableWeb
-                  || form.watch("autoRegister.targetAvailableWeb") !== autoStatusQuery.data?.targetAvailableWeb
+                {t("settings.autoRegister.availableWeb")}: {autoStatusQuery.data?.availableWeb ?? "-"}
+                {" · "}
+                {t("settings.autoRegister.runtimeThreshold")}: {t("settings.autoRegister.targetShort")} {autoStatusQuery.data?.targetAvailableWeb ?? "-"}
+                {form.watch("autoRegister.targetAvailableWeb") !== autoStatusQuery.data?.targetAvailableWeb
                   ? (
                     <span className="ml-1 text-amber-600 dark:text-amber-400">
                       ({t("settings.autoRegister.formDiffersFromRuntime")})
@@ -302,10 +303,10 @@ export function SettingsPage() {
                   <div className="flex h-8 items-center"><Switch id="auto-register-enabled" checked={field.value} onCheckedChange={field.onChange} /></div>
                 )} />
               </SettingsField>
-              <SettingsField controlId="auto-register-min" label={t("settings.autoRegister.minAvailableWeb")} error={form.formState.errors.autoRegister?.minAvailableWeb?.message}>
+              <SettingsField controlId="auto-register-min" label={t("settings.autoRegister.minAvailableWeb")} description={t("settings.autoRegister.minAvailableWebHelp")} error={form.formState.errors.autoRegister?.minAvailableWeb?.message}>
                 <Input id="auto-register-min" type="number" min={0} max={10_000} {...form.register("autoRegister.minAvailableWeb", { valueAsNumber: true })} />
               </SettingsField>
-              <SettingsField controlId="auto-register-target" label={t("settings.autoRegister.targetAvailableWeb")} error={form.formState.errors.autoRegister?.targetAvailableWeb?.message}>
+              <SettingsField controlId="auto-register-target" label={t("settings.autoRegister.targetAvailableWeb")} description={t("settings.autoRegister.targetAvailableWebHelp")} error={form.formState.errors.autoRegister?.targetAvailableWeb?.message}>
                 <Input id="auto-register-target" type="number" min={0} max={10_000} {...form.register("autoRegister.targetAvailableWeb", { valueAsNumber: true })} />
               </SettingsField>
               <SettingsField controlId="auto-register-concurrency" label={t("settings.autoRegister.maxConcurrent")} error={form.formState.errors.autoRegister?.maxConcurrent?.message}>
@@ -463,7 +464,7 @@ export function SettingsPage() {
               </SettingsField>
               <SettingsField controlId="auto-register-probe-model" label={t("settings.autoRegister.probeModel")} description={t("settings.autoRegister.probeModelHelp")}>
                 <Controller control={form.control} name="autoRegister.probeModel" render={({ field }) => (
-                  <Input id="auto-register-probe-model" value={field.value} onChange={field.onChange} placeholder="grok-4" />
+                  <Input id="auto-register-probe-model" value={field.value} onChange={field.onChange} placeholder="grok-4.5" />
                 )} />
               </SettingsField>
             </div>

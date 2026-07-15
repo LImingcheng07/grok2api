@@ -50,9 +50,12 @@ type Status struct {
 	Enabled            bool      `json:"enabled"`
 	Running            bool      `json:"running"`
 	Stopping           bool      `json:"stopping"`
+	// AvailableBuild is the pool metric for refill (schedulable Grok Build accounts).
+	AvailableBuild int64 `json:"availableBuild"`
+	// AvailableWeb kept for diagnostics (register still produces Web SSO first).
 	AvailableWeb       int64     `json:"availableWeb"`
-	MinAvailableWeb    int       `json:"minAvailableWeb"`
-	TargetAvailableWeb int       `json:"targetAvailableWeb"`
+	MinAvailableWeb    int       `json:"minAvailableWeb"`    // low-water label; schedule uses target
+	TargetAvailableWeb int       `json:"targetAvailableWeb"` // desired available Build count
 	LastCheckAt        time.Time `json:"lastCheckAt,omitempty"`
 	LastSuccessAt      time.Time `json:"lastSuccessAt,omitempty"`
 	LastError          string    `json:"lastError,omitempty"`
@@ -159,8 +162,10 @@ func (s *Service) Run(ctx context.Context) {
 	}
 }
 
-// tick runs one refill pass. force=true is used by "run once" so a manual shot
-// works without leaving the auto schedule permanently enabled.
+// tick runs one refill pass.
+// force=true: 「立即补号」— 立刻按 (目标Build − 当前可用Build) 开批补到目标。
+// force=false: 定时自动补号 — 仅当可用 Build < 目标时补到目标。
+// 水位按 Grok Build 可调度账号计（验活通过后的可用 Build），不是 Web SSO 数。
 func (s *Service) tick(ctx context.Context, force bool) {
 	cfg := s.settings.AutoRegisterRuntime()
 	if !cfg.Enabled && !force {
@@ -195,12 +200,17 @@ func (s *Service) tick(ctx context.Context, force bool) {
 		s.fail("summary", err.Error(), nil)
 		return
 	}
-	available := summary.Providers[string(accountdomain.ProviderWeb)].Available
+	availableBuild := summary.Providers[string(accountdomain.ProviderBuild)].Available
+	availableWeb := summary.Providers[string(accountdomain.ProviderWeb)].Available
 	minAvail := cfg.MinAvailableWeb
 	if minAvail < 0 {
 		minAvail = 0
 	}
+	// Target = desired available Build count (settings field name kept for DB compat).
 	target := cfg.TargetAvailableWeb
+	if target < 1 {
+		target = 1
+	}
 	if target < minAvail {
 		target = minAvail
 	}
@@ -212,61 +222,82 @@ func (s *Service) tick(ctx context.Context, force bool) {
 		workers = 5
 	}
 
-	// need:
-	// - scheduled: fill gap up to target (capped per tick by MaxConcurrent workers × gap)
-	// - force ("立即补号一次"): always register MaxConcurrent accounts (at least 1),
-	//   independent of whether the pool already meets min/target.
-	//
-	// Historical bug: force used need=max(1, target-available). When the *runtime*
-	// target was still the default (10) or a small saved value while available was
-	// higher (e.g. 65), need collapsed to 1 and the worker then skipped registerOne
-	// because available >= target — log looked like only batch_start → batch_done.
-	// UI could still show typed 500/1000 if save failed or status showed stale fields.
-	var need int
-	if force {
-		need = workers
-	} else {
-		if available >= int64(minAvail) {
-			s.setStatus(func(st *Status) {
-				st.Enabled = cfg.Enabled
-				st.AvailableWeb = available
-				st.MinAvailableWeb = minAvail
-				st.TargetAvailableWeb = target
-				st.LastCheckAt = time.Now().UTC()
-				st.Phase = "skip"
-				st.Progress = fmt.Sprintf("skip schedule: available=%d >= min=%d", available, minAvail)
-				st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf(
-					"[phase:skip] schedule idle available=%d min=%d target=%d", available, minAvail, target,
-				))
-			})
-			return
-		}
-		need = int(int64(target) - available)
-		if need <= 0 {
-			return
-		}
+	// need = how many successful Build accounts we still want this batch.
+	// workers = parallel register slots only (not batch size).
+	const maxRegisterPerBatch = 500
+	gap := int(int64(target) - availableBuild)
+	if gap < 0 {
+		gap = 0
+	}
+
+	if !force && availableBuild >= int64(target) {
+		s.setStatus(func(st *Status) {
+			st.Enabled = cfg.Enabled
+			st.AvailableBuild = availableBuild
+			st.AvailableWeb = availableWeb
+			st.MinAvailableWeb = minAvail
+			st.TargetAvailableWeb = target
+			st.LastCheckAt = time.Now().UTC()
+			st.Phase = "skip"
+			st.Progress = fmt.Sprintf("skip schedule: availableBuild=%d >= target=%d", availableBuild, target)
+			st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf(
+				"[phase:skip] schedule idle availableBuild=%d availableWeb=%d min=%d target=%d",
+				availableBuild, availableWeb, minAvail, target,
+			))
+		})
+		return
+	}
+
+	need := gap
+	if force && need < 1 {
+		// Already at/above target: manual click is a no-op fill (do not force extra over-target).
+		s.setStatus(func(st *Status) {
+			st.Enabled = cfg.Enabled
+			st.AvailableBuild = availableBuild
+			st.AvailableWeb = availableWeb
+			st.MinAvailableWeb = minAvail
+			st.TargetAvailableWeb = target
+			st.LastCheckAt = time.Now().UTC()
+			st.Phase = "skip"
+			st.Progress = fmt.Sprintf("skip run-once: availableBuild=%d already >= target=%d", availableBuild, target)
+			st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf(
+				"[phase:skip] run-once idle availableBuild=%d target=%d (raise target to refill)",
+				availableBuild, target,
+			))
+		})
+		return
+	}
+	if need < 1 {
+		return
+	}
+	if need > maxRegisterPerBatch {
+		s.logger.Info("auto_register_batch_capped", "need", need, "cap", maxRegisterPerBatch, "force", force)
+		need = maxRegisterPerBatch
 	}
 	if workers > need {
 		workers = need
 	}
 	s.setStatus(func(st *Status) {
 		st.Enabled = cfg.Enabled
-		st.AvailableWeb = available
+		st.AvailableBuild = availableBuild
+		st.AvailableWeb = availableWeb
 		st.MinAvailableWeb = minAvail
 		st.TargetAvailableWeb = target
 		st.LastCheckAt = time.Now().UTC()
 		st.Phase = "batch_start"
-		st.Progress = fmt.Sprintf("starting batch need=%d workers=%d available=%d min=%d target=%d force=%v",
-			need, workers, available, minAvail, target, force)
+		st.Progress = fmt.Sprintf(
+			"starting batch need=%d workers=%d availableBuild=%d availableWeb=%d target=%d force=%v",
+			need, workers, availableBuild, availableWeb, target, force,
+		)
 		st.StartedAt = time.Now().UTC()
 		st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf(
-			"[phase:batch_start] need=%d workers=%d available=%d min=%d target=%d force=%v",
-			need, workers, available, minAvail, target, force,
+			"[phase:batch_start] need=%d workers=%d availableBuild=%d availableWeb=%d min=%d target=%d force=%v",
+			need, workers, availableBuild, availableWeb, minAvail, target, force,
 		))
 	})
 	s.logger.Info("auto_register_start",
-		"available", available, "min", minAvail, "target", target,
-		"need", need, "workers", workers, "force", force,
+		"available_build", availableBuild, "available_web", availableWeb,
+		"min", minAvail, "target", target, "need", need, "workers", workers, "force", force,
 	)
 
 	var wg sync.WaitGroup
@@ -287,24 +318,26 @@ func (s *Service) tick(ctx context.Context, force bool) {
 				if !force && !live.Enabled {
 					return
 				}
-				// Scheduled mode may stop early when pool hits target mid-batch.
-				// Force/run-once never skips for target — user explicitly asked to register.
-				if !force {
-					sum, err := s.accounts.Summary(runCtx)
-					if err == nil {
-						liveTarget := live.TargetAvailableWeb
-						if liveTarget < live.MinAvailableWeb {
-							liveTarget = live.MinAvailableWeb
-						}
-						if sum.Providers[string(accountdomain.ProviderWeb)].Available >= int64(liveTarget) {
-							s.setStatus(func(st *Status) {
-								st.Progress = fmt.Sprintf("skip: available=%d already >= target=%d",
-									sum.Providers[string(accountdomain.ProviderWeb)].Available, liveTarget)
-								st.RecentLogs = appendLog(st.RecentLogs,
-									fmt.Sprintf("[phase:skip] available already at target=%d", liveTarget))
-							})
-							return
-						}
+				// Both schedule and run-once stop mid-batch once Build pool hits target.
+				liveTarget := live.TargetAvailableWeb
+				if liveTarget < 1 {
+					liveTarget = 1
+				}
+				if live.MinAvailableWeb > liveTarget {
+					liveTarget = live.MinAvailableWeb
+				}
+				if sum, err := s.accounts.Summary(runCtx); err == nil {
+					liveBuild := sum.Providers[string(accountdomain.ProviderBuild)].Available
+					if liveBuild >= int64(liveTarget) {
+						s.setStatus(func(st *Status) {
+							st.AvailableBuild = liveBuild
+							st.AvailableWeb = sum.Providers[string(accountdomain.ProviderWeb)].Available
+							st.Progress = fmt.Sprintf("skip: availableBuild=%d already >= target=%d", liveBuild, liveTarget)
+							st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf(
+								"[phase:skip] availableBuild already at target=%d", liveTarget,
+							))
+						})
+						return
 					}
 				}
 				s.registerOne(runCtx, live, index)
@@ -322,12 +355,22 @@ func (s *Service) tick(ctx context.Context, force bool) {
 		s.logger.Info("auto_register_stopped")
 		return
 	}
+	// Refresh pool counts after batch.
+	if sum, err := s.accounts.Summary(context.WithoutCancel(runCtx)); err == nil {
+		s.setStatus(func(st *Status) {
+			st.AvailableBuild = sum.Providers[string(accountdomain.ProviderBuild)].Available
+			st.AvailableWeb = sum.Providers[string(accountdomain.ProviderWeb)].Available
+		})
+	}
 	s.setStatus(func(st *Status) {
 		if st.Phase != "done" && st.Phase != "failed" && st.Phase != "skip" {
 			st.Phase = "idle"
 			st.Progress = "batch finished"
 		}
-		st.RecentLogs = appendLog(st.RecentLogs, "[phase:batch_done] batch finished")
+		st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf(
+			"[phase:batch_done] batch finished availableBuild=%d target=%d",
+			st.AvailableBuild, st.TargetAvailableWeb,
+		))
 	})
 }
 
