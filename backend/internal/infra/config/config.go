@@ -50,6 +50,38 @@ type Config struct {
 	Routing           RoutingConfig           `yaml:"routing"`
 	Audit             AuditConfig             `yaml:"audit"`
 	ClientKeyDefaults ClientKeyDefaultsConfig `yaml:"clientKeyDefaults"`
+	AutoRegister      AutoRegisterConfig      `yaml:"-"`
+}
+
+// AutoRegisterConfig 协议自动补号（热加载，UI 可配置）。
+type AutoRegisterConfig struct {
+	Enabled            bool
+	MinAvailableWeb    int
+	TargetAvailableWeb int
+	MaxConcurrent      int
+	CheckInterval      Duration
+	RegisterTimeout    Duration
+	SidecarURL         string
+	// MailProvider: cloudflare | yyds
+	MailProvider           string
+	MailAPIBase            string
+	MailAdminKey           string
+	MailAuthMode           string
+	MailDomains            string
+	MailPathNewAddress     string
+	MailPathMessages       string
+	MailAutoDomains        bool
+	MailRandomSubdomain    bool
+	MailDomainStrategy     string
+	YydsAllowPublicDomains bool
+	YydsJWT                string
+	CaptchaKey             string
+	CaptchaEndpoint        string
+	CaptchaTimeout         Duration
+	MailTimeout            Duration
+	AlsoImportConsole      bool
+	FallbackProxyURL       string
+	SkipCaptcha            bool
 }
 
 type ServerConfig struct {
@@ -507,6 +539,16 @@ func defaultConfig() Config {
 		},
 		Audit:             AuditConfig{BufferSize: 16384, BatchSize: 256, FlushInterval: Duration(250 * time.Millisecond)},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},
+		AutoRegister: AutoRegisterConfig{
+			Enabled: false, MinAvailableWeb: 5, TargetAvailableWeb: 10, MaxConcurrent: 1,
+			CheckInterval: Duration(60 * time.Second), RegisterTimeout: Duration(8 * time.Minute),
+			SidecarURL: "http://127.0.0.1:8091", MailProvider: "cloudflare", MailAuthMode: "x-admin-auth",
+			MailPathNewAddress: "/admin/new_address", MailPathMessages: "/api/mails",
+			MailAutoDomains: true, MailRandomSubdomain: true, MailDomainStrategy: "rotate",
+			YydsAllowPublicDomains: false,
+			CaptchaEndpoint:        "https://api.ez-captcha.com", CaptchaTimeout: Duration(180 * time.Second),
+			MailTimeout: Duration(120 * time.Second), AlsoImportConsole: false, SkipCaptcha: false,
+		},
 	}
 }
 

@@ -1,3 +1,4 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, RotateCcw } from "lucide-react";
 import { type ReactNode } from "react";
 import { Controller } from "react-hook-form";
@@ -11,6 +12,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EgressNodes } from "@/features/settings/egress-nodes";
+import { getAutoRegisterStatus, runAutoRegisterOnce, stopAutoRegister } from "@/features/settings/settings-api";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isByteSizeUnit, isDurationUnit, type ByteSizeValue, type DurationValue } from "@/features/settings/settings-model";
 import { useSettings } from "@/features/settings/use-settings";
@@ -18,7 +20,22 @@ import { ErrorState } from "@/shared/components/data-state";
 
 export function SettingsPage() {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { form, settingsQuery, updateMutation, reset } = useSettings();
+  const autoStatusQuery = useQuery({
+    queryKey: ["auto-register-status"],
+    queryFn: getAutoRegisterStatus,
+    // Poll faster while a job is running so phase/logs stay live.
+    refetchInterval: (query) => (query.state.data?.running ? 1_500 : 5_000),
+  });
+  const runOnceMutation = useMutation({
+    mutationFn: runAutoRegisterOnce,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["auto-register-status"] }),
+  });
+  const stopMutation = useMutation({
+    mutationFn: stopAutoRegister,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["auto-register-status"] }),
+  });
 
   if (settingsQuery.isError) {
     return <ErrorState message={settingsQuery.error.message} onRetry={() => void settingsQuery.refetch()} />;
@@ -69,6 +86,7 @@ export function SettingsPage() {
             <TabsTrigger value="providers">{t("settings.groups.providers")}</TabsTrigger>
             <TabsTrigger value="delivery">{t("settings.groups.delivery")}</TabsTrigger>
             <TabsTrigger value="policies">{t("settings.groups.policies")}</TabsTrigger>
+            <TabsTrigger value="autoRegister">{t("settings.groups.autoRegister")}</TabsTrigger>
           </TabsList>
 
           <SettingsPane value="providers">
@@ -204,6 +222,223 @@ export function SettingsPage() {
             <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
               <SettingsField controlId="client-key-default-rpm" label={t("settings.clientKeys.rpmLimit")} error={form.formState.errors.clientKeyDefaults?.rpmLimit?.message}><Input id="client-key-default-rpm" type="number" min={1} max={100_000} {...form.register("clientKeyDefaults.rpmLimit", { valueAsNumber: true })} /></SettingsField>
               <SettingsField controlId="client-key-default-concurrency" label={t("settings.clientKeys.maxConcurrent")} error={form.formState.errors.clientKeyDefaults?.maxConcurrent?.message}><Input id="client-key-default-concurrency" type="number" min={1} max={1_024} {...form.register("clientKeyDefaults.maxConcurrent", { valueAsNumber: true })} /></SettingsField>
+            </div>
+          </SettingsSection>
+          </SettingsPane>
+
+          <SettingsPane value="autoRegister">
+          <SettingsSection
+            title={t("settings.autoRegister.title")}
+            action={
+              autoStatusQuery.data?.running ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  disabled={stopMutation.isPending || autoStatusQuery.data?.stopping}
+                  onClick={() => stopMutation.mutate()}
+                >
+                  {stopMutation.isPending || autoStatusQuery.data?.stopping ? <Spinner /> : null}
+                  {autoStatusQuery.data?.stopping ? t("settings.autoRegister.stopping") : t("settings.autoRegister.stop")}
+                </Button>
+              ) : (
+                <Button type="button" size="sm" variant="secondary" disabled={runOnceMutation.isPending} onClick={() => runOnceMutation.mutate()}>
+                  {runOnceMutation.isPending ? <Spinner /> : null}
+                  {t("settings.autoRegister.runOnce")}
+                </Button>
+              )
+            }
+          >
+            <p className="mb-4 text-xs leading-5 text-muted-foreground">{t("settings.autoRegister.description")}</p>
+            <div className="mb-5 grid gap-2 rounded-md bg-muted/40 p-3 text-xs text-muted-foreground sm:grid-cols-2">
+              <div>
+                {t("settings.autoRegister.status")}:{" "}
+                {autoStatusQuery.data?.stopping
+                  ? t("settings.autoRegister.stopping")
+                  : autoStatusQuery.data?.running
+                    ? t("settings.autoRegister.running")
+                    : t("settings.autoRegister.idle")}
+                {typeof autoStatusQuery.data?.inFlight === "number" && autoStatusQuery.data.inFlight > 0
+                  ? ` · ${t("settings.autoRegister.inFlight")}: ${autoStatusQuery.data.inFlight}`
+                  : null}
+              </div>
+              <div>{t("settings.autoRegister.available")}: {autoStatusQuery.data?.availableWeb ?? "-"} / min {autoStatusQuery.data?.minAvailableWeb ?? "-"} → {autoStatusQuery.data?.targetAvailableWeb ?? "-"}</div>
+              <div>{t("settings.autoRegister.success")}: {autoStatusQuery.data?.successCount ?? 0}</div>
+              <div>{t("settings.autoRegister.failure")}: {autoStatusQuery.data?.failureCount ?? 0}</div>
+              <div>{t("settings.autoRegister.lastEmail")}: {autoStatusQuery.data?.lastEmail || "-"}</div>
+              <div>{t("settings.autoRegister.lastProxy")}: {autoStatusQuery.data?.lastProxy || "-"}</div>
+              <div className="sm:col-span-2">
+                {t("settings.autoRegister.phase")}:{" "}
+                <span className="font-medium text-foreground">{autoStatusQuery.data?.phase || "-"}</span>
+                {autoStatusQuery.data?.progress ? (
+                  <span className="mt-0.5 block break-all text-[11px] leading-4">{autoStatusQuery.data.progress}</span>
+                ) : null}
+              </div>
+              {autoStatusQuery.data?.lastError ? <div className="sm:col-span-2 text-destructive">{t("settings.autoRegister.lastError")}: {autoStatusQuery.data.lastError}</div> : null}
+              {autoStatusQuery.data?.recentLogs && autoStatusQuery.data.recentLogs.length > 0 ? (
+                <div className="sm:col-span-2">
+                  <div className="mb-1 font-medium text-foreground">{t("settings.autoRegister.recentLogs")}</div>
+                  <pre className="max-h-40 overflow-auto rounded border border-border/60 bg-background/70 p-2 text-[11px] leading-4 text-foreground/90 whitespace-pre-wrap break-all">
+                    {autoStatusQuery.data.recentLogs.slice(-24).join("\n")}
+                  </pre>
+                </div>
+              ) : null}
+            </div>
+            <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
+              <SettingsField controlId="auto-register-enabled" label={t("settings.autoRegister.enabled")} className="sm:col-span-2">
+                <Controller control={form.control} name="autoRegister.enabled" render={({ field }) => (
+                  <div className="flex h-8 items-center"><Switch id="auto-register-enabled" checked={field.value} onCheckedChange={field.onChange} /></div>
+                )} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-min" label={t("settings.autoRegister.minAvailableWeb")} error={form.formState.errors.autoRegister?.minAvailableWeb?.message}>
+                <Input id="auto-register-min" type="number" min={0} max={10_000} {...form.register("autoRegister.minAvailableWeb", { valueAsNumber: true })} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-target" label={t("settings.autoRegister.targetAvailableWeb")} error={form.formState.errors.autoRegister?.targetAvailableWeb?.message}>
+                <Input id="auto-register-target" type="number" min={0} max={10_000} {...form.register("autoRegister.targetAvailableWeb", { valueAsNumber: true })} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-concurrency" label={t("settings.autoRegister.maxConcurrent")} error={form.formState.errors.autoRegister?.maxConcurrent?.message}>
+                <Input id="auto-register-concurrency" type="number" min={1} max={5} {...form.register("autoRegister.maxConcurrent", { valueAsNumber: true })} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-check-interval" label={t("settings.autoRegister.checkInterval")} error={form.formState.errors.autoRegister?.checkInterval?.message}>
+                <Controller control={form.control} name="autoRegister.checkInterval" render={({ field }) => <DurationInput id="auto-register-check-interval" value={field.value} onChange={field.onChange} />} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-timeout" label={t("settings.autoRegister.registerTimeout")} error={form.formState.errors.autoRegister?.registerTimeout?.message}>
+                <Controller control={form.control} name="autoRegister.registerTimeout" render={({ field }) => <DurationInput id="auto-register-timeout" value={field.value} onChange={field.onChange} />} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-sidecar" className="sm:col-span-2" label={t("settings.autoRegister.sidecarURL")} error={form.formState.errors.autoRegister?.sidecarURL?.message}>
+                <Input id="auto-register-sidecar" placeholder="http://127.0.0.1:8091" {...form.register("autoRegister.sidecarURL")} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-mail-provider" className="sm:col-span-2" label={t("settings.autoRegister.mailProvider")} error={form.formState.errors.autoRegister?.mailProvider?.message}>
+                <Controller control={form.control} name="autoRegister.mailProvider" render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger id="auto-register-mail-provider"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="cloudflare">{t("settings.autoRegister.mailProviderCloudflare")}</SelectItem>
+                      <SelectItem value="yyds">{t("settings.autoRegister.mailProviderYyds")}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-mail-base" className="sm:col-span-2" label={t("settings.autoRegister.mailApiBase")} error={form.formState.errors.autoRegister?.mailApiBase?.message}>
+                <Input
+                  id="auto-register-mail-base"
+                  placeholder={form.watch("autoRegister.mailProvider") === "yyds" ? "https://maliapi.215.im/v1" : "https://api-mail.example.com"}
+                  {...form.register("autoRegister.mailApiBase")}
+                />
+                {form.watch("autoRegister.mailProvider") === "yyds" ? (
+                  <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.autoRegister.mailApiBaseYydsHelp")}</p>
+                ) : null}
+              </SettingsField>
+              <SettingsField controlId="auto-register-mail-key" className="sm:col-span-2" label={t("settings.autoRegister.mailAdminKey")} badge={form.watch("autoRegister.mailAdminKeyConfigured") ? t("settings.autoRegister.keepConfigured") : undefined} error={form.formState.errors.autoRegister?.mailAdminKey?.message}>
+                <Input
+                  id="auto-register-mail-key"
+                  type="password"
+                  autoComplete="off"
+                  placeholder={form.watch("autoRegister.mailAdminKeyConfigured") ? t("settings.autoRegister.keepConfigured") : (form.watch("autoRegister.mailProvider") === "yyds" ? "AC-..." : undefined)}
+                  {...form.register("autoRegister.mailAdminKey")}
+                />
+                {form.watch("autoRegister.mailProvider") === "yyds" ? (
+                  <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.autoRegister.mailAdminKeyYydsHelp")}</p>
+                ) : null}
+              </SettingsField>
+              {form.watch("autoRegister.mailProvider") === "yyds" ? (
+                <SettingsField controlId="auto-register-yyds-jwt" className="sm:col-span-2" label={t("settings.autoRegister.yydsJwt")} badge={form.watch("autoRegister.yydsJwtConfigured") ? t("settings.autoRegister.keepConfigured") : undefined} error={form.formState.errors.autoRegister?.yydsJwt?.message}>
+                  <Input
+                    id="auto-register-yyds-jwt"
+                    type="password"
+                    autoComplete="off"
+                    placeholder={form.watch("autoRegister.yydsJwtConfigured") ? t("settings.autoRegister.keepConfigured") : "eyJ..."}
+                    {...form.register("autoRegister.yydsJwt")}
+                  />
+                  <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.autoRegister.yydsJwtHelp")}</p>
+                </SettingsField>
+              ) : null}
+              {form.watch("autoRegister.mailProvider") !== "yyds" ? (
+                <>
+                  <SettingsField controlId="auto-register-mail-mode" label={t("settings.autoRegister.mailAuthMode")} error={form.formState.errors.autoRegister?.mailAuthMode?.message}>
+                    <Input id="auto-register-mail-mode" placeholder="x-admin-auth" {...form.register("autoRegister.mailAuthMode")} />
+                  </SettingsField>
+                  <SettingsField controlId="auto-register-mail-new" label={t("settings.autoRegister.mailPathNewAddress")} error={form.formState.errors.autoRegister?.mailPathNewAddress?.message}>
+                    <Input id="auto-register-mail-new" {...form.register("autoRegister.mailPathNewAddress")} />
+                  </SettingsField>
+                  <SettingsField controlId="auto-register-mail-msg" label={t("settings.autoRegister.mailPathMessages")} error={form.formState.errors.autoRegister?.mailPathMessages?.message}>
+                    <Input id="auto-register-mail-msg" {...form.register("autoRegister.mailPathMessages")} />
+                  </SettingsField>
+                </>
+              ) : null}
+              <SettingsField controlId="auto-register-mail-domains" className="sm:col-span-2" label={t("settings.autoRegister.mailDomains")} error={form.formState.errors.autoRegister?.mailDomains?.message}>
+                <Input
+                  id="auto-register-mail-domains"
+                  placeholder={form.watch("autoRegister.mailProvider") === "yyds" ? "mail.your-domain.com" : "edu.example.com, doclaw.cn"}
+                  {...form.register("autoRegister.mailDomains")}
+                />
+                {form.watch("autoRegister.mailProvider") === "yyds" ? (
+                  <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.autoRegister.mailDomainsYydsHelp")}</p>
+                ) : (
+                  <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.autoRegister.mailDomainsCloudflareHelp")}</p>
+                )}
+              </SettingsField>
+              <SettingsField controlId="auto-register-mail-strategy" label={t("settings.autoRegister.mailDomainStrategy")} error={form.formState.errors.autoRegister?.mailDomainStrategy?.message}>
+                <Controller control={form.control} name="autoRegister.mailDomainStrategy" render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger id="auto-register-mail-strategy"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="rotate">{t("settings.autoRegister.mailDomainStrategyRotate")}</SelectItem>
+                      <SelectItem value="random">{t("settings.autoRegister.mailDomainStrategyRandom")}</SelectItem>
+                      <SelectItem value="first">{t("settings.autoRegister.mailDomainStrategyFirst")}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )} />
+              </SettingsField>
+              {form.watch("autoRegister.mailProvider") !== "yyds" ? (
+                <>
+                  <SettingsField controlId="auto-register-mail-auto-domains" label={t("settings.autoRegister.mailAutoDomains")}>
+                    <Controller control={form.control} name="autoRegister.mailAutoDomains" render={({ field }) => (
+                      <div className="flex h-8 items-center"><Switch id="auto-register-mail-auto-domains" checked={field.value} onCheckedChange={field.onChange} /></div>
+                    )} />
+                    <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.autoRegister.mailAutoDomainsHelp")}</p>
+                  </SettingsField>
+                  <SettingsField controlId="auto-register-mail-random-sub" label={t("settings.autoRegister.mailRandomSubdomain")}>
+                    <Controller control={form.control} name="autoRegister.mailRandomSubdomain" render={({ field }) => (
+                      <div className="flex h-8 items-center"><Switch id="auto-register-mail-random-sub" checked={field.value} onCheckedChange={field.onChange} /></div>
+                    )} />
+                    <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.autoRegister.mailRandomSubdomainHelp")}</p>
+                  </SettingsField>
+                </>
+              ) : (
+                <SettingsField controlId="auto-register-yyds-public" className="sm:col-span-2" label={t("settings.autoRegister.yydsAllowPublicDomains")}>
+                  <Controller control={form.control} name="autoRegister.yydsAllowPublicDomains" render={({ field }) => (
+                    <div className="flex h-8 items-center"><Switch id="auto-register-yyds-public" checked={field.value} onCheckedChange={field.onChange} /></div>
+                  )} />
+                  <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.autoRegister.yydsAllowPublicDomainsHelp")}</p>
+                </SettingsField>
+              )}
+              <SettingsField controlId="auto-register-captcha-key" className="sm:col-span-2" label={t("settings.autoRegister.captchaKey")} badge={form.watch("autoRegister.captchaKeyConfigured") ? t("settings.autoRegister.keepConfigured") : undefined} error={form.formState.errors.autoRegister?.captchaKey?.message}>
+                <Input id="auto-register-captcha-key" type="password" autoComplete="off" placeholder={form.watch("autoRegister.captchaKeyConfigured") ? t("settings.autoRegister.keepConfigured") : undefined} {...form.register("autoRegister.captchaKey")} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-captcha-endpoint" className="sm:col-span-2" label={t("settings.autoRegister.captchaEndpoint")} error={form.formState.errors.autoRegister?.captchaEndpoint?.message}>
+                <Input id="auto-register-captcha-endpoint" placeholder="https://api.ez-captcha.com" {...form.register("autoRegister.captchaEndpoint")} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-captcha-timeout" label={t("settings.autoRegister.captchaTimeout")} error={form.formState.errors.autoRegister?.captchaTimeout?.message}>
+                <Controller control={form.control} name="autoRegister.captchaTimeout" render={({ field }) => <DurationInput id="auto-register-captcha-timeout" value={field.value} onChange={field.onChange} />} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-mail-timeout" label={t("settings.autoRegister.mailTimeout")} error={form.formState.errors.autoRegister?.mailTimeout?.message}>
+                <Controller control={form.control} name="autoRegister.mailTimeout" render={({ field }) => <DurationInput id="auto-register-mail-timeout" value={field.value} onChange={field.onChange} />} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-fallback-proxy" className="sm:col-span-2" label={t("settings.autoRegister.fallbackProxyURL")} error={form.formState.errors.autoRegister?.fallbackProxyURL?.message}>
+                <Input id="auto-register-fallback-proxy" placeholder="http://127.0.0.1:7897" {...form.register("autoRegister.fallbackProxyURL")} />
+                <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.autoRegister.fallbackProxyURLHelp")}</p>
+              </SettingsField>
+              <SettingsField controlId="auto-register-skip-captcha" label={t("settings.autoRegister.skipCaptcha")} className="sm:col-span-2">
+                <Controller control={form.control} name="autoRegister.skipCaptcha" render={({ field }) => (
+                  <div className="flex h-8 items-center"><Switch id="auto-register-skip-captcha" checked={field.value} onCheckedChange={field.onChange} /></div>
+                )} />
+              </SettingsField>
+              <SettingsField controlId="auto-register-also-console" label={t("settings.autoRegister.alsoImportConsole")} className="sm:col-span-2">
+                <Controller control={form.control} name="autoRegister.alsoImportConsole" render={({ field }) => (
+                  <div className="flex h-8 items-center"><Switch id="auto-register-also-console" checked={field.value} onCheckedChange={field.onChange} /></div>
+                )} />
+              </SettingsField>
             </div>
           </SettingsSection>
           </SettingsPane>

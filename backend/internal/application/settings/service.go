@@ -103,6 +103,39 @@ type ClientKeyDefaultsConfig struct {
 	MaxConcurrent int
 }
 
+// AutoRegisterConfig 是管理接口使用的协议自动补号输入。
+type AutoRegisterConfig struct {
+	Enabled                bool
+	MinAvailableWeb        int
+	TargetAvailableWeb     int
+	MaxConcurrent          int
+	CheckInterval          string
+	RegisterTimeout        string
+	SidecarURL             string
+	MailProvider           string
+	MailAPIBase            string
+	MailAdminKey           string
+	MailAdminKeyConfigured bool
+	MailAuthMode           string
+	MailDomains            string
+	MailPathNewAddress     string
+	MailPathMessages       string
+	MailAutoDomains        bool
+	MailRandomSubdomain    bool
+	MailDomainStrategy     string
+	YydsAllowPublicDomains bool
+	YydsJWT                string
+	YydsJWTConfigured      bool
+	CaptchaKey             string
+	CaptchaKeyConfigured   bool
+	CaptchaEndpoint        string
+	CaptchaTimeout         string
+	MailTimeout            string
+	AlsoImportConsole      bool
+	FallbackProxyURL       string
+	SkipCaptcha            bool
+}
+
 // EditableConfig 聚合管理端允许修改的运行参数。
 type EditableConfig struct {
 	Server            ServerConfig
@@ -115,6 +148,7 @@ type EditableConfig struct {
 	Routing           RoutingConfig
 	Audit             AuditConfig
 	ClientKeyDefaults ClientKeyDefaultsConfig
+	AutoRegister      AutoRegisterConfig
 }
 
 // Snapshot 表示当前运行设置和需要重启才能生效的字段。
@@ -176,6 +210,13 @@ func (s *Service) PublicAPIBaseURL() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.cfg.Frontend.EffectivePublicAPIBaseURL()
+}
+
+// AutoRegisterRuntime 返回当前生效的自动补号配置（含密钥，仅进程内后台任务使用）。
+func (s *Service) AutoRegisterRuntime() config.AutoRegisterConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg.AutoRegister
 }
 
 // Update 校验并持久化运行设置，再原子替换进程内配置。
@@ -297,6 +338,81 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	base.ClientKeyDefaults = config.ClientKeyDefaultsConfig{
 		RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
 	}
+	// Older revisions may omit AutoRegister; keep code defaults for zero fields.
+	ar := base.AutoRegister
+	ar.Enabled = value.AutoRegister.Enabled
+	ar.AlsoImportConsole = value.AutoRegister.AlsoImportConsole
+	if value.AutoRegister.MinAvailableWeb > 0 {
+		ar.MinAvailableWeb = value.AutoRegister.MinAvailableWeb
+	}
+	if value.AutoRegister.TargetAvailableWeb > 0 {
+		ar.TargetAvailableWeb = value.AutoRegister.TargetAvailableWeb
+	}
+	if value.AutoRegister.MaxConcurrent > 0 {
+		ar.MaxConcurrent = value.AutoRegister.MaxConcurrent
+	}
+	if value.AutoRegister.CheckInterval > 0 {
+		ar.CheckInterval = config.Duration(value.AutoRegister.CheckInterval)
+	}
+	if value.AutoRegister.RegisterTimeout > 0 {
+		ar.RegisterTimeout = config.Duration(value.AutoRegister.RegisterTimeout)
+	}
+	if strings.TrimSpace(value.AutoRegister.SidecarURL) != "" {
+		ar.SidecarURL = value.AutoRegister.SidecarURL
+	}
+	if strings.TrimSpace(value.AutoRegister.MailProvider) != "" {
+		ar.MailProvider = value.AutoRegister.MailProvider
+	}
+	if strings.TrimSpace(value.AutoRegister.MailAPIBase) != "" {
+		ar.MailAPIBase = value.AutoRegister.MailAPIBase
+	}
+	if strings.TrimSpace(value.AutoRegister.MailAdminKey) != "" {
+		ar.MailAdminKey = value.AutoRegister.MailAdminKey
+	}
+	if strings.TrimSpace(value.AutoRegister.MailAuthMode) != "" {
+		ar.MailAuthMode = value.AutoRegister.MailAuthMode
+	}
+	// Allow clearing domains when user intentionally empties the field after a prior value.
+	ar.MailDomains = value.AutoRegister.MailDomains
+	if strings.TrimSpace(value.AutoRegister.MailPathNewAddress) != "" {
+		ar.MailPathNewAddress = value.AutoRegister.MailPathNewAddress
+	}
+	if strings.TrimSpace(value.AutoRegister.MailPathMessages) != "" {
+		ar.MailPathMessages = value.AutoRegister.MailPathMessages
+	}
+	// New fields: if strategy is empty the revision predates them — keep sensible defaults.
+	if strings.TrimSpace(value.AutoRegister.MailDomainStrategy) == "" {
+		ar.MailAutoDomains = true
+		ar.MailRandomSubdomain = true
+		ar.MailDomainStrategy = "rotate"
+		ar.YydsAllowPublicDomains = false
+	} else {
+		ar.MailAutoDomains = value.AutoRegister.MailAutoDomains
+		ar.MailRandomSubdomain = value.AutoRegister.MailRandomSubdomain
+		ar.MailDomainStrategy = value.AutoRegister.MailDomainStrategy
+		ar.YydsAllowPublicDomains = value.AutoRegister.YydsAllowPublicDomains
+	}
+	if strings.TrimSpace(value.AutoRegister.YydsJWT) != "" {
+		ar.YydsJWT = value.AutoRegister.YydsJWT
+	}
+	if strings.TrimSpace(value.AutoRegister.CaptchaKey) != "" {
+		ar.CaptchaKey = value.AutoRegister.CaptchaKey
+	}
+	if strings.TrimSpace(value.AutoRegister.CaptchaEndpoint) != "" {
+		ar.CaptchaEndpoint = value.AutoRegister.CaptchaEndpoint
+	}
+	if value.AutoRegister.CaptchaTimeout > 0 {
+		ar.CaptchaTimeout = config.Duration(value.AutoRegister.CaptchaTimeout)
+	}
+	if value.AutoRegister.MailTimeout > 0 {
+		ar.MailTimeout = config.Duration(value.AutoRegister.MailTimeout)
+	}
+	if strings.TrimSpace(value.AutoRegister.FallbackProxyURL) != "" {
+		ar.FallbackProxyURL = value.AutoRegister.FallbackProxyURL
+	}
+	ar.SkipCaptcha = value.AutoRegister.SkipCaptcha
+	ar.AlsoImportConsole = value.AutoRegister.AlsoImportConsole
+	base.AutoRegister = ar
 	return base
 }
 
@@ -343,6 +459,21 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 		},
 		ClientKeyDefaults: settingsdomain.ClientKeyDefaultsConfig{
 			RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
+		},
+		AutoRegister: settingsdomain.AutoRegisterConfig{
+			Enabled: value.AutoRegister.Enabled, MinAvailableWeb: value.AutoRegister.MinAvailableWeb,
+			TargetAvailableWeb: value.AutoRegister.TargetAvailableWeb, MaxConcurrent: value.AutoRegister.MaxConcurrent,
+			CheckInterval: value.AutoRegister.CheckInterval.Value(), RegisterTimeout: value.AutoRegister.RegisterTimeout.Value(),
+			SidecarURL: value.AutoRegister.SidecarURL, MailProvider: value.AutoRegister.MailProvider,
+			MailAPIBase: value.AutoRegister.MailAPIBase, MailAdminKey: value.AutoRegister.MailAdminKey,
+			MailAuthMode: value.AutoRegister.MailAuthMode, MailDomains: value.AutoRegister.MailDomains,
+			MailPathNewAddress: value.AutoRegister.MailPathNewAddress, MailPathMessages: value.AutoRegister.MailPathMessages,
+			MailAutoDomains: value.AutoRegister.MailAutoDomains, MailRandomSubdomain: value.AutoRegister.MailRandomSubdomain,
+			MailDomainStrategy: value.AutoRegister.MailDomainStrategy, YydsAllowPublicDomains: value.AutoRegister.YydsAllowPublicDomains,
+			YydsJWT: value.AutoRegister.YydsJWT, CaptchaKey: value.AutoRegister.CaptchaKey,
+			CaptchaEndpoint: value.AutoRegister.CaptchaEndpoint, CaptchaTimeout: value.AutoRegister.CaptchaTimeout.Value(),
+			MailTimeout: value.AutoRegister.MailTimeout.Value(), AlsoImportConsole: value.AutoRegister.AlsoImportConsole,
+			FallbackProxyURL: value.AutoRegister.FallbackProxyURL, SkipCaptcha: value.AutoRegister.SkipCaptcha,
 		},
 	}
 }
@@ -402,6 +533,40 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Audit.BatchSize = input.Audit.BatchSize
 	next.ClientKeyDefaults.RPMLimit = input.ClientKeyDefaults.RPMLimit
 	next.ClientKeyDefaults.MaxConcurrent = input.ClientKeyDefaults.MaxConcurrent
+	next.AutoRegister.Enabled = input.AutoRegister.Enabled
+	next.AutoRegister.MinAvailableWeb = input.AutoRegister.MinAvailableWeb
+	next.AutoRegister.TargetAvailableWeb = input.AutoRegister.TargetAvailableWeb
+	next.AutoRegister.MaxConcurrent = input.AutoRegister.MaxConcurrent
+	next.AutoRegister.SidecarURL = strings.TrimSpace(input.AutoRegister.SidecarURL)
+	next.AutoRegister.MailProvider = strings.TrimSpace(input.AutoRegister.MailProvider)
+	if next.AutoRegister.MailProvider == "" {
+		next.AutoRegister.MailProvider = "cloudflare"
+	}
+	next.AutoRegister.MailAPIBase = strings.TrimSpace(input.AutoRegister.MailAPIBase)
+	if key := strings.TrimSpace(input.AutoRegister.MailAdminKey); key != "" {
+		next.AutoRegister.MailAdminKey = key
+	}
+	next.AutoRegister.MailAuthMode = strings.TrimSpace(input.AutoRegister.MailAuthMode)
+	next.AutoRegister.MailDomains = strings.TrimSpace(input.AutoRegister.MailDomains)
+	next.AutoRegister.MailPathNewAddress = strings.TrimSpace(input.AutoRegister.MailPathNewAddress)
+	next.AutoRegister.MailPathMessages = strings.TrimSpace(input.AutoRegister.MailPathMessages)
+	next.AutoRegister.MailAutoDomains = input.AutoRegister.MailAutoDomains
+	next.AutoRegister.MailRandomSubdomain = input.AutoRegister.MailRandomSubdomain
+	next.AutoRegister.MailDomainStrategy = strings.TrimSpace(input.AutoRegister.MailDomainStrategy)
+	if next.AutoRegister.MailDomainStrategy == "" {
+		next.AutoRegister.MailDomainStrategy = "rotate"
+	}
+	next.AutoRegister.YydsAllowPublicDomains = input.AutoRegister.YydsAllowPublicDomains
+	if jwt := strings.TrimSpace(input.AutoRegister.YydsJWT); jwt != "" {
+		next.AutoRegister.YydsJWT = jwt
+	}
+	if key := strings.TrimSpace(input.AutoRegister.CaptchaKey); key != "" {
+		next.AutoRegister.CaptchaKey = key
+	}
+	next.AutoRegister.CaptchaEndpoint = strings.TrimSpace(input.AutoRegister.CaptchaEndpoint)
+	next.AutoRegister.AlsoImportConsole = input.AutoRegister.AlsoImportConsole
+	next.AutoRegister.FallbackProxyURL = strings.TrimSpace(input.AutoRegister.FallbackProxyURL)
+	next.AutoRegister.SkipCaptcha = input.AutoRegister.SkipCaptcha
 
 	durations := []struct {
 		path  string
@@ -422,6 +587,10 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 		{"providerConsole.chatTimeout", input.ProviderConsole.ChatTimeout, func(value config.Duration) { next.Provider.Console.ChatTimeout = value }},
 		{"media.cleanupInterval", input.Media.CleanupInterval, func(value config.Duration) { next.Media.CleanupInterval = value }},
 		{"batch.randomDelay", input.Batch.RandomDelay, func(value config.Duration) { next.Batch.RandomDelay = value }},
+		{"autoRegister.checkInterval", input.AutoRegister.CheckInterval, func(value config.Duration) { next.AutoRegister.CheckInterval = value }},
+		{"autoRegister.registerTimeout", input.AutoRegister.RegisterTimeout, func(value config.Duration) { next.AutoRegister.RegisterTimeout = value }},
+		{"autoRegister.captchaTimeout", input.AutoRegister.CaptchaTimeout, func(value config.Duration) { next.AutoRegister.CaptchaTimeout = value }},
+		{"autoRegister.mailTimeout", input.AutoRegister.MailTimeout, func(value config.Duration) { next.AutoRegister.MailTimeout = value }},
 	}
 	for _, item := range durations {
 		value, err := time.ParseDuration(strings.TrimSpace(item.value))
@@ -477,5 +646,41 @@ func toEditable(cfg config.Config) EditableConfig {
 			BufferSize: cfg.Audit.BufferSize, BatchSize: cfg.Audit.BatchSize, FlushInterval: cfg.Audit.FlushInterval.String(),
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: cfg.ClientKeyDefaults.RPMLimit, MaxConcurrent: cfg.ClientKeyDefaults.MaxConcurrent},
+		AutoRegister: AutoRegisterConfig{
+			Enabled: cfg.AutoRegister.Enabled, MinAvailableWeb: cfg.AutoRegister.MinAvailableWeb,
+			TargetAvailableWeb: cfg.AutoRegister.TargetAvailableWeb, MaxConcurrent: cfg.AutoRegister.MaxConcurrent,
+			CheckInterval: cfg.AutoRegister.CheckInterval.String(), RegisterTimeout: cfg.AutoRegister.RegisterTimeout.String(),
+			SidecarURL: cfg.AutoRegister.SidecarURL,
+			MailProvider: mailProviderOrDefault(cfg.AutoRegister.MailProvider),
+			MailAPIBase: cfg.AutoRegister.MailAPIBase,
+			MailAdminKeyConfigured: strings.TrimSpace(cfg.AutoRegister.MailAdminKey) != "",
+			MailAuthMode: cfg.AutoRegister.MailAuthMode, MailDomains: cfg.AutoRegister.MailDomains,
+			MailPathNewAddress: cfg.AutoRegister.MailPathNewAddress, MailPathMessages: cfg.AutoRegister.MailPathMessages,
+			MailAutoDomains: cfg.AutoRegister.MailAutoDomains, MailRandomSubdomain: cfg.AutoRegister.MailRandomSubdomain,
+			MailDomainStrategy: firstNonEmptyLocal(cfg.AutoRegister.MailDomainStrategy, "rotate"),
+			YydsAllowPublicDomains: cfg.AutoRegister.YydsAllowPublicDomains,
+			YydsJWTConfigured: strings.TrimSpace(cfg.AutoRegister.YydsJWT) != "",
+			CaptchaKeyConfigured: strings.TrimSpace(cfg.AutoRegister.CaptchaKey) != "",
+			CaptchaEndpoint: cfg.AutoRegister.CaptchaEndpoint, CaptchaTimeout: cfg.AutoRegister.CaptchaTimeout.String(),
+			MailTimeout: cfg.AutoRegister.MailTimeout.String(), AlsoImportConsole: cfg.AutoRegister.AlsoImportConsole,
+			FallbackProxyURL: cfg.AutoRegister.FallbackProxyURL, SkipCaptcha: cfg.AutoRegister.SkipCaptcha,
+		},
 	}
+}
+
+func mailProviderOrDefault(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return "cloudflare"
+	}
+	return value
+}
+
+func firstNonEmptyLocal(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

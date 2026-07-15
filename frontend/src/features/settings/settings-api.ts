@@ -21,6 +21,58 @@ export type SettingsConfigDTO = {
   routing: { stickyTTL: string; cooldownBase: string; cooldownMax: string; capacityWait: string; maxAttempts: number };
   audit: { bufferSize: number; batchSize: number; flushInterval: string };
   clientKeyDefaults: { rpmLimit: number; maxConcurrent: number };
+  autoRegister: {
+    enabled: boolean;
+    minAvailableWeb: number;
+    targetAvailableWeb: number;
+    maxConcurrent: number;
+    checkInterval: string;
+    registerTimeout: string;
+    sidecarURL: string;
+    mailProvider: string;
+    mailApiBase: string;
+    mailAdminKey: string;
+    mailAdminKeyConfigured: boolean;
+    mailAuthMode: string;
+    mailDomains: string;
+    mailPathNewAddress: string;
+    mailPathMessages: string;
+    mailAutoDomains: boolean;
+    mailRandomSubdomain: boolean;
+    mailDomainStrategy: string;
+    yydsAllowPublicDomains: boolean;
+    yydsJwt: string;
+    yydsJwtConfigured: boolean;
+    captchaKey: string;
+    captchaKeyConfigured: boolean;
+    captchaEndpoint: string;
+    captchaTimeout: string;
+    mailTimeout: string;
+    alsoImportConsole: boolean;
+    fallbackProxyURL: string;
+    skipCaptcha: boolean;
+  };
+};
+
+export type AutoRegisterStatusDTO = {
+  enabled: boolean;
+  running: boolean;
+  stopping?: boolean;
+  availableWeb: number;
+  minAvailableWeb: number;
+  targetAvailableWeb: number;
+  lastCheckAt?: string;
+  lastSuccessAt?: string;
+  lastError?: string;
+  lastEmail?: string;
+  lastProxy?: string;
+  phase?: string;
+  progress?: string;
+  recentLogs?: string[];
+  successCount: number;
+  failureCount: number;
+  inFlight: number;
+  startedAt?: string;
 };
 
 export type EgressNodeDTO = {
@@ -60,6 +112,19 @@ const settingsConfigValidator = hasShape({
   routing: hasShape({ stickyTTL: isString, cooldownBase: isString, cooldownMax: isString, capacityWait: isString, maxAttempts: isNumber }),
   audit: hasShape({ bufferSize: isNumber, batchSize: isNumber, flushInterval: isString }),
   clientKeyDefaults: hasShape({ rpmLimit: isNumber, maxConcurrent: isNumber }),
+  autoRegister: hasShape({
+    enabled: isBoolean, minAvailableWeb: isNumber, targetAvailableWeb: isNumber, maxConcurrent: isNumber,
+    checkInterval: isString, registerTimeout: isString, sidecarURL: isString,
+    mailProvider: isOptional(isString), mailApiBase: isString,
+    mailAdminKey: isOptional(isString), mailAdminKeyConfigured: isBoolean, mailAuthMode: isString, mailDomains: isString,
+    mailPathNewAddress: isString, mailPathMessages: isString,
+    mailAutoDomains: isOptional(isBoolean), mailRandomSubdomain: isOptional(isBoolean),
+    mailDomainStrategy: isOptional(isString), yydsAllowPublicDomains: isOptional(isBoolean),
+    yydsJwt: isOptional(isString), yydsJwtConfigured: isOptional(isBoolean),
+    captchaKey: isOptional(isString), captchaKeyConfigured: isBoolean, captchaEndpoint: isString,
+    captchaTimeout: isString, mailTimeout: isString, alsoImportConsole: isBoolean, fallbackProxyURL: isString,
+    skipCaptcha: isOptional(isBoolean),
+  }),
 });
 const decodeSettingsSnapshot = createObjectDecoder<SettingsSnapshotDTO>("settings", {
   config: settingsConfigValidator,
@@ -111,4 +176,37 @@ export function updateEgressNode(id: string, input: EgressNodeInput): Promise<Eg
 
 export function deleteEgressNode(id: string): Promise<{ deleted: boolean }> {
   return apiRequest(`/api/admin/v1/egress-nodes/${id}`, { method: "DELETE" }, decodeBooleanResult<{ deleted: boolean }>("deleted"));
+}
+
+const decodeAutoRegisterStatus = createObjectDecoder<AutoRegisterStatusDTO>("auto register status", {
+  enabled: isBoolean,
+  running: isBoolean,
+  stopping: isOptional(isBoolean),
+  availableWeb: isNumber,
+  minAvailableWeb: isNumber,
+  targetAvailableWeb: isNumber,
+  lastCheckAt: isOptional(isString),
+  lastSuccessAt: isOptional(isString),
+  lastError: isOptional(isString),
+  lastEmail: isOptional(isString),
+  lastProxy: isOptional(isString),
+  phase: isOptional(isString),
+  progress: isOptional(isString),
+  recentLogs: isOptional(isArrayOf(isString)),
+  successCount: isNumber,
+  failureCount: isNumber,
+  inFlight: isNumber,
+  startedAt: isOptional(isString),
+});
+
+export function getAutoRegisterStatus(): Promise<AutoRegisterStatusDTO> {
+  return apiRequest("/api/admin/v1/auto-register/status", {}, decodeAutoRegisterStatus);
+}
+
+export function runAutoRegisterOnce(): Promise<AutoRegisterStatusDTO> {
+  return apiRequest("/api/admin/v1/auto-register/run-once", { method: "POST" }, decodeAutoRegisterStatus);
+}
+
+export function stopAutoRegister(): Promise<AutoRegisterStatusDTO> {
+  return apiRequest("/api/admin/v1/auto-register/stop", { method: "POST" }, decodeAutoRegisterStatus);
 }

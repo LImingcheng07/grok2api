@@ -16,8 +16,11 @@ import (
 const runtimeSettingsKey = "gateway"
 
 type runtimeSettingsPayload struct {
-	Config                      settingsdomain.Config `json:"config"`
-	EncryptedStatsigManualValue string                `json:"encryptedStatsigManualValue,omitempty"`
+	Config                          settingsdomain.Config `json:"config"`
+	EncryptedStatsigManualValue     string                `json:"encryptedStatsigManualValue,omitempty"`
+	EncryptedAutoRegisterMailKey    string                `json:"encryptedAutoRegisterMailKey,omitempty"`
+	EncryptedAutoRegisterCaptchaKey string                `json:"encryptedAutoRegisterCaptchaKey,omitempty"`
+	EncryptedAutoRegisterYydsJWT    string                `json:"encryptedAutoRegisterYydsJwt,omitempty"`
 }
 
 type RuntimeSettingsRepository struct {
@@ -47,6 +50,21 @@ func (r *RuntimeSettingsRepository) Get(ctx context.Context) (settingsdomain.Con
 		return settingsdomain.Config{}, time.Time{}, 0, false, fmt.Errorf("解密 Statsig 手动值: %w", err)
 	}
 	payload.Config.ProviderWeb.StatsigManualValue = manualValue
+	mailKey, err := r.cipher.Decrypt(payload.EncryptedAutoRegisterMailKey)
+	if err != nil {
+		return settingsdomain.Config{}, time.Time{}, 0, false, fmt.Errorf("解密自动补号邮箱密钥: %w", err)
+	}
+	payload.Config.AutoRegister.MailAdminKey = mailKey
+	captchaKey, err := r.cipher.Decrypt(payload.EncryptedAutoRegisterCaptchaKey)
+	if err != nil {
+		return settingsdomain.Config{}, time.Time{}, 0, false, fmt.Errorf("解密自动补号打码密钥: %w", err)
+	}
+	payload.Config.AutoRegister.CaptchaKey = captchaKey
+	yydsJWT, err := r.cipher.Decrypt(payload.EncryptedAutoRegisterYydsJWT)
+	if err != nil {
+		return settingsdomain.Config{}, time.Time{}, 0, false, fmt.Errorf("解密自动补号 YYDS JWT: %w", err)
+	}
+	payload.Config.AutoRegister.YydsJWT = yydsJWT
 	return payload.Config, row.UpdatedAt, row.Revision, true, nil
 }
 
@@ -56,7 +74,26 @@ func (r *RuntimeSettingsRepository) Save(ctx context.Context, value settingsdoma
 		return time.Time{}, 0, fmt.Errorf("加密 Statsig 手动值: %w", err)
 	}
 	value.ProviderWeb.StatsigManualValue = ""
-	payload, err := json.Marshal(runtimeSettingsPayload{Config: value, EncryptedStatsigManualValue: manualValue})
+	mailKey, err := r.cipher.Encrypt(value.AutoRegister.MailAdminKey)
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("加密自动补号邮箱密钥: %w", err)
+	}
+	value.AutoRegister.MailAdminKey = ""
+	captchaKey, err := r.cipher.Encrypt(value.AutoRegister.CaptchaKey)
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("加密自动补号打码密钥: %w", err)
+	}
+	value.AutoRegister.CaptchaKey = ""
+	yydsJWT, err := r.cipher.Encrypt(value.AutoRegister.YydsJWT)
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("加密自动补号 YYDS JWT: %w", err)
+	}
+	value.AutoRegister.YydsJWT = ""
+	payload, err := json.Marshal(runtimeSettingsPayload{
+		Config: value, EncryptedStatsigManualValue: manualValue,
+		EncryptedAutoRegisterMailKey: mailKey, EncryptedAutoRegisterCaptchaKey: captchaKey,
+		EncryptedAutoRegisterYydsJWT: yydsJWT,
+	})
 	if err != nil {
 		return time.Time{}, 0, fmt.Errorf("编码运行设置: %w", err)
 	}

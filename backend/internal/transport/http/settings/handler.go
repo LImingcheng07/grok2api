@@ -31,6 +31,39 @@ type settingsConfigDTO struct {
 	Routing           routingConfigDTO           `json:"routing"`
 	Audit             auditConfigDTO             `json:"audit"`
 	ClientKeyDefaults clientKeyDefaultsConfigDTO `json:"clientKeyDefaults"`
+	AutoRegister      autoRegisterConfigDTO      `json:"autoRegister"`
+}
+
+type autoRegisterConfigDTO struct {
+	Enabled                bool   `json:"enabled"`
+	MinAvailableWeb        int    `json:"minAvailableWeb"`
+	TargetAvailableWeb     int    `json:"targetAvailableWeb"`
+	MaxConcurrent          int    `json:"maxConcurrent"`
+	CheckInterval          string `json:"checkInterval"`
+	RegisterTimeout        string `json:"registerTimeout"`
+	SidecarURL             string `json:"sidecarURL"`
+	MailProvider           string `json:"mailProvider"`
+	MailAPIBase            string `json:"mailApiBase"`
+	MailAdminKey           string `json:"mailAdminKey"`
+	MailAdminKeyConfigured bool   `json:"mailAdminKeyConfigured"`
+	MailAuthMode           string `json:"mailAuthMode"`
+	MailDomains            string `json:"mailDomains"`
+	MailPathNewAddress     string `json:"mailPathNewAddress"`
+	MailPathMessages       string `json:"mailPathMessages"`
+	MailAutoDomains        bool   `json:"mailAutoDomains"`
+	MailRandomSubdomain    bool   `json:"mailRandomSubdomain"`
+	MailDomainStrategy     string `json:"mailDomainStrategy"`
+	YydsAllowPublicDomains bool   `json:"yydsAllowPublicDomains"`
+	YydsJWT                string `json:"yydsJwt"`
+	YydsJWTConfigured      bool   `json:"yydsJwtConfigured"`
+	CaptchaKey             string `json:"captchaKey"`
+	CaptchaKeyConfigured   bool   `json:"captchaKeyConfigured"`
+	CaptchaEndpoint        string `json:"captchaEndpoint"`
+	CaptchaTimeout         string `json:"captchaTimeout"`
+	MailTimeout            string `json:"mailTimeout"`
+	AlsoImportConsole      bool   `json:"alsoImportConsole"`
+	FallbackProxyURL       string `json:"fallbackProxyURL"`
+	SkipCaptcha            bool   `json:"skipCaptcha"`
 }
 
 type serverConfigDTO struct {
@@ -193,6 +226,23 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 		ClientKeyDefaults: settingsapp.ClientKeyDefaultsConfig{
 			RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
 		},
+		AutoRegister: settingsapp.AutoRegisterConfig{
+			Enabled: value.AutoRegister.Enabled, MinAvailableWeb: value.AutoRegister.MinAvailableWeb,
+			TargetAvailableWeb: value.AutoRegister.TargetAvailableWeb, MaxConcurrent: value.AutoRegister.MaxConcurrent,
+			CheckInterval: value.AutoRegister.CheckInterval, RegisterTimeout: value.AutoRegister.RegisterTimeout,
+			SidecarURL: value.AutoRegister.SidecarURL, MailProvider: value.AutoRegister.MailProvider,
+			MailAPIBase: value.AutoRegister.MailAPIBase,
+			MailAdminKey: value.AutoRegister.MailAdminKey, MailAdminKeyConfigured: value.AutoRegister.MailAdminKeyConfigured,
+			MailAuthMode: value.AutoRegister.MailAuthMode, MailDomains: value.AutoRegister.MailDomains,
+			MailPathNewAddress: value.AutoRegister.MailPathNewAddress, MailPathMessages: value.AutoRegister.MailPathMessages,
+			MailAutoDomains: value.AutoRegister.MailAutoDomains, MailRandomSubdomain: value.AutoRegister.MailRandomSubdomain,
+			MailDomainStrategy: value.AutoRegister.MailDomainStrategy, YydsAllowPublicDomains: value.AutoRegister.YydsAllowPublicDomains,
+			YydsJWT: value.AutoRegister.YydsJWT, YydsJWTConfigured: value.AutoRegister.YydsJWTConfigured,
+			CaptchaKey: value.AutoRegister.CaptchaKey, CaptchaKeyConfigured: value.AutoRegister.CaptchaKeyConfigured,
+			CaptchaEndpoint: value.AutoRegister.CaptchaEndpoint, CaptchaTimeout: value.AutoRegister.CaptchaTimeout,
+			MailTimeout: value.AutoRegister.MailTimeout, AlsoImportConsole: value.AutoRegister.AlsoImportConsole,
+			FallbackProxyURL: value.AutoRegister.FallbackProxyURL, SkipCaptcha: value.AutoRegister.SkipCaptcha,
+		},
 	}
 }
 
@@ -240,6 +290,23 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 			},
 			ClientKeyDefaults: clientKeyDefaultsConfigDTO{
 				RPMLimit: config.ClientKeyDefaults.RPMLimit, MaxConcurrent: config.ClientKeyDefaults.MaxConcurrent,
+			},
+			AutoRegister: autoRegisterConfigDTO{
+				Enabled: config.AutoRegister.Enabled, MinAvailableWeb: config.AutoRegister.MinAvailableWeb,
+				TargetAvailableWeb: config.AutoRegister.TargetAvailableWeb, MaxConcurrent: config.AutoRegister.MaxConcurrent,
+				CheckInterval: config.AutoRegister.CheckInterval, RegisterTimeout: config.AutoRegister.RegisterTimeout,
+				SidecarURL: config.AutoRegister.SidecarURL, MailProvider: config.AutoRegister.MailProvider,
+				MailAPIBase: config.AutoRegister.MailAPIBase,
+				MailAdminKeyConfigured: config.AutoRegister.MailAdminKeyConfigured,
+				MailAuthMode: config.AutoRegister.MailAuthMode, MailDomains: config.AutoRegister.MailDomains,
+				MailPathNewAddress: config.AutoRegister.MailPathNewAddress, MailPathMessages: config.AutoRegister.MailPathMessages,
+				MailAutoDomains: config.AutoRegister.MailAutoDomains, MailRandomSubdomain: config.AutoRegister.MailRandomSubdomain,
+				MailDomainStrategy: config.AutoRegister.MailDomainStrategy, YydsAllowPublicDomains: config.AutoRegister.YydsAllowPublicDomains,
+				YydsJWTConfigured: config.AutoRegister.YydsJWTConfigured,
+				CaptchaKeyConfigured: config.AutoRegister.CaptchaKeyConfigured,
+				CaptchaEndpoint: config.AutoRegister.CaptchaEndpoint, CaptchaTimeout: config.AutoRegister.CaptchaTimeout,
+				MailTimeout: config.AutoRegister.MailTimeout, AlsoImportConsole: config.AutoRegister.AlsoImportConsole,
+				FallbackProxyURL: config.AutoRegister.FallbackProxyURL, SkipCaptcha: config.AutoRegister.SkipCaptcha,
 			},
 		},
 		RecommendedProviderBuild: providerBuildRecommendationDTO{

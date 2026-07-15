@@ -16,6 +16,25 @@ services:
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
+    depends_on:
+      - auto-register
+
+  # 协议自动补号 sidecar（Cloud Temp Mail + ez-captcha）
+  # 在管理端「设置 → 自动补号」开启；Sidecar 地址填 http://auto-register:8091
+  # 随机 IP：在「设置 → 出口代理」添加多个 Grok Web 节点，每号随机轮训
+  auto-register:
+    container_name: grok2api-auto-register
+    build:
+      context: ./services/auto_register
+    ports:
+      - "${AUTO_REGISTER_PORT:-8091}:8091"
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      AUTO_REGISTER_PORT: "8091"
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
 
   # 如果出口 IP 不干净，可取消以下注释使用 WARP 作为落地代理。
   # 启用后，在管理端“设置 -> 出口代理”中新增 socks5://warp:1080。

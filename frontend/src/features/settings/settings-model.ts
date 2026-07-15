@@ -106,6 +106,67 @@ export const settingsSchema = z.object({
   audit: z.object({ bufferSize: positiveInteger.max(262_144), batchSize: positiveInteger.max(4_096), flushInterval: auditFlushDuration })
     .refine((value) => value.batchSize <= value.bufferSize, { path: ["batchSize"] }),
   clientKeyDefaults: z.object({ rpmLimit: positiveInteger.max(100_000), maxConcurrent: positiveInteger.max(1_024) }),
+  autoRegister: z.object({
+    enabled: z.boolean(),
+    minAvailableWeb: z.number().int().min(0).max(10_000),
+    targetAvailableWeb: z.number().int().min(0).max(10_000),
+    maxConcurrent: positiveInteger.max(5),
+    checkInterval: durationSchema.refine((value) => durationSeconds(value) >= 15 && durationSeconds(value) <= 86_400),
+    registerTimeout: durationSchema.refine((value) => durationSeconds(value) >= 60 && durationSeconds(value) <= 30 * 60),
+    sidecarURL: z.string().trim().max(2048),
+    mailProvider: z.enum(["cloudflare", "yyds"]),
+    mailApiBase: z.string().trim().max(2048),
+    mailAdminKey: z.string().trim().max(512),
+    mailAdminKeyConfigured: z.boolean(),
+    mailAuthMode: z.string().trim().max(64),
+    mailDomains: z.string().trim().max(2048),
+    mailPathNewAddress: z.string().trim().max(256),
+    mailPathMessages: z.string().trim().max(256),
+    mailAutoDomains: z.boolean(),
+    mailRandomSubdomain: z.boolean(),
+    mailDomainStrategy: z.enum(["rotate", "random", "first"]),
+    yydsAllowPublicDomains: z.boolean(),
+    yydsJwt: z.string().trim().max(4096),
+    yydsJwtConfigured: z.boolean(),
+    captchaKey: z.string().trim().max(512),
+    captchaKeyConfigured: z.boolean(),
+    captchaEndpoint: z.string().trim().max(2048),
+    captchaTimeout: durationSchema.refine((value) => durationSeconds(value) >= 30 && durationSeconds(value) <= 600),
+    mailTimeout: durationSchema.refine((value) => durationSeconds(value) >= 30 && durationSeconds(value) <= 600),
+    alsoImportConsole: z.boolean(),
+    fallbackProxyURL: z.string().trim().max(2048),
+    skipCaptcha: z.boolean(),
+  }).superRefine((value, context) => {
+    if (value.targetAvailableWeb < value.minAvailableWeb) {
+      context.addIssue({ code: "custom", path: ["targetAvailableWeb"], message: "invalid" });
+    }
+    if (value.enabled) {
+      const isYyds = value.mailProvider === "yyds";
+      if (!isYyds && !value.mailApiBase.trim()) {
+        context.addIssue({ code: "custom", path: ["mailApiBase"], message: "required" });
+      }
+      // Cloud Temp Mail: domains optional when auto-fetch is on.
+      if (!isYyds && !value.mailDomains.trim() && !value.mailAutoDomains) {
+        context.addIssue({ code: "custom", path: ["mailDomains"], message: "required" });
+      }
+      // YYDS: self-hosted domain required unless user explicitly allows public (blacklisted).
+      if (isYyds && !value.mailDomains.trim() && !value.yydsAllowPublicDomains) {
+        context.addIssue({ code: "custom", path: ["mailDomains"], message: "required" });
+      }
+      const hasMailKey = value.mailAdminKeyConfigured || value.mailAdminKey.trim();
+      const hasYydsJwt = value.yydsJwtConfigured || value.yydsJwt.trim();
+      if (isYyds) {
+        if (!hasMailKey && !hasYydsJwt) {
+          context.addIssue({ code: "custom", path: ["mailAdminKey"], message: "required" });
+        }
+      } else if (!hasMailKey) {
+        context.addIssue({ code: "custom", path: ["mailAdminKey"], message: "required" });
+      }
+      if (!value.skipCaptcha && !value.captchaKeyConfigured && !value.captchaKey.trim()) {
+        context.addIssue({ code: "custom", path: ["captchaKey"], message: "required" });
+      }
+    }
+  }),
 });
 
 export type SettingsForm = z.infer<typeof settingsSchema>;
@@ -137,6 +198,39 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
     },
     audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: parseDuration(config.audit.flushInterval) },
     clientKeyDefaults: config.clientKeyDefaults,
+    autoRegister: {
+      enabled: config.autoRegister?.enabled ?? false,
+      minAvailableWeb: config.autoRegister?.minAvailableWeb ?? 5,
+      targetAvailableWeb: config.autoRegister?.targetAvailableWeb ?? 10,
+      maxConcurrent: config.autoRegister?.maxConcurrent ?? 1,
+      checkInterval: parseDuration(config.autoRegister?.checkInterval || "1m"),
+      registerTimeout: parseDuration(config.autoRegister?.registerTimeout || "8m"),
+      sidecarURL: config.autoRegister?.sidecarURL ?? "http://127.0.0.1:8091",
+      mailProvider: (config.autoRegister?.mailProvider === "yyds" ? "yyds" : "cloudflare") as "cloudflare" | "yyds",
+      mailApiBase: config.autoRegister?.mailApiBase ?? "",
+      mailAdminKey: "",
+      mailAdminKeyConfigured: config.autoRegister?.mailAdminKeyConfigured ?? false,
+      mailAuthMode: config.autoRegister?.mailAuthMode || "x-admin-auth",
+      mailDomains: config.autoRegister?.mailDomains ?? "",
+      mailPathNewAddress: config.autoRegister?.mailPathNewAddress || "/admin/new_address",
+      mailPathMessages: config.autoRegister?.mailPathMessages || "/api/mails",
+      mailAutoDomains: config.autoRegister?.mailAutoDomains ?? true,
+      mailRandomSubdomain: config.autoRegister?.mailRandomSubdomain ?? true,
+      mailDomainStrategy: (["rotate", "random", "first"].includes(config.autoRegister?.mailDomainStrategy || "")
+        ? config.autoRegister?.mailDomainStrategy
+        : "rotate") as "rotate" | "random" | "first",
+      yydsAllowPublicDomains: config.autoRegister?.yydsAllowPublicDomains ?? false,
+      yydsJwt: "",
+      yydsJwtConfigured: config.autoRegister?.yydsJwtConfigured ?? false,
+      captchaKey: "",
+      captchaKeyConfigured: config.autoRegister?.captchaKeyConfigured ?? false,
+      captchaEndpoint: config.autoRegister?.captchaEndpoint || "https://api.ez-captcha.com",
+      captchaTimeout: parseDuration(config.autoRegister?.captchaTimeout || "3m"),
+      mailTimeout: parseDuration(config.autoRegister?.mailTimeout || "2m"),
+      alsoImportConsole: config.autoRegister?.alsoImportConsole ?? false,
+      fallbackProxyURL: config.autoRegister?.fallbackProxyURL ?? "",
+      skipCaptcha: config.autoRegister?.skipCaptcha ?? false,
+    },
   };
 }
 
@@ -166,6 +260,24 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
     },
     audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: formatDuration(config.audit.flushInterval) },
     clientKeyDefaults: config.clientKeyDefaults,
+    autoRegister: {
+      ...config.autoRegister,
+      checkInterval: formatDuration(config.autoRegister.checkInterval),
+      registerTimeout: formatDuration(config.autoRegister.registerTimeout),
+      captchaTimeout: formatDuration(config.autoRegister.captchaTimeout),
+      mailTimeout: formatDuration(config.autoRegister.mailTimeout),
+      sidecarURL: config.autoRegister.sidecarURL.trim(),
+      mailProvider: config.autoRegister.mailProvider,
+      mailApiBase: config.autoRegister.mailApiBase.trim(),
+      mailDomains: config.autoRegister.mailDomains.trim(),
+      mailAutoDomains: config.autoRegister.mailAutoDomains,
+      mailRandomSubdomain: config.autoRegister.mailRandomSubdomain,
+      mailDomainStrategy: config.autoRegister.mailDomainStrategy,
+      yydsAllowPublicDomains: config.autoRegister.yydsAllowPublicDomains,
+      captchaEndpoint: config.autoRegister.captchaEndpoint.trim(),
+      fallbackProxyURL: config.autoRegister.fallbackProxyURL.trim(),
+      skipCaptcha: config.autoRegister.skipCaptcha,
+    },
   };
 }
 

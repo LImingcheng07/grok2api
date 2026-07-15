@@ -1,0 +1,14 @@
+# DEPRECATED for auto-register when using Grok2API admin.
+#
+# Protocol auto-refill picks proxies only from:
+#   管理端 → 运行设置 → 出口代理 → 作用域「Grok Web」
+# optional fallback:
+#   管理端 → 自动补号 → 无出口节点时备用代理
+#
+# Do not put production proxies only in this file — they will NOT show in the
+# egress pool UI, and the sidecar no longer auto-loads proxies.txt.
+#
+# This file remains only as a manual/dev helper if you call protocol_register.py
+# directly with config.proxy_file set explicitly.
+#
+# socks5://user:pass@host:port

@@ -14,6 +14,47 @@ type Config struct {
 	Routing           RoutingConfig
 	Audit             AuditConfig
 	ClientKeyDefaults ClientKeyDefaultsConfig
+	AutoRegister      AutoRegisterConfig
+}
+
+// AutoRegisterConfig 控制协议自动补号（Cloud Temp Mail / YYDS Mail + ez-captcha）。
+// 出口代理从 grok_web 出口节点池随机轮训，保证每号随机 IP。
+type AutoRegisterConfig struct {
+	Enabled            bool
+	MinAvailableWeb    int
+	TargetAvailableWeb int
+	MaxConcurrent      int
+	CheckInterval      time.Duration
+	RegisterTimeout    time.Duration
+	SidecarURL         string
+	// MailProvider: "cloudflare" (Cloud Temp Mail) or "yyds" (YYDS Mail https://vip.215.im/docs).
+	MailProvider string
+	MailAPIBase  string
+	MailAdminKey string
+	MailAuthMode string
+	// MailDomains: comma-separated domains. YYDS: put your self-hosted domain(s) here
+	// (public shared domains are often blocked by xAI). Cloud Temp Mail: optional when auto-fetch is on.
+	MailDomains        string
+	MailPathNewAddress string
+	MailPathMessages   string
+	// MailAutoDomains: Cloud Temp Mail — fetch domains from API and merge/fallback.
+	MailAutoDomains bool
+	// MailRandomSubdomain: Cloud Temp Mail enablePrefix / random local prefix.
+	MailRandomSubdomain bool
+	// MailDomainStrategy: rotate | random | first
+	MailDomainStrategy string
+	// YydsAllowPublicDomains: allow YYDS shared public domains (usually blacklisted by xAI).
+	YydsAllowPublicDomains bool
+	// YydsJWT optional Bearer JWT for YYDS (alternative to API Key).
+	YydsJWT           string
+	CaptchaKey        string
+	CaptchaEndpoint   string
+	CaptchaTimeout    time.Duration
+	MailTimeout       time.Duration
+	AlsoImportConsole bool
+	FallbackProxyURL  string
+	// SkipCaptcha attempts signup without Turnstile when true (clean residential IP may pass).
+	SkipCaptcha bool
 }
 
 // ServerConfig 定义可热更新的推理入口容量参数。
