@@ -3,6 +3,10 @@
 Produces SSO tokens via xconsole_client. Supports Cloud Temp Mail / YYDS Mail
 + optional ez-captcha, and a single-use proxy (random IP rotation is driven
 by the Go caller).
+
+Upstream project: https://github.com/chenyme/grok2api (Author: Chenyme, MIT).
+This sidecar is part of a fork that adds protocol auto-register to the gateway.
+See docs/AUTO_REGISTER.md for setup and ops.
 """
 
 from __future__ import annotations
