@@ -225,6 +225,7 @@ create_mailbox
 
 | 现象 | 可能原因 | 处理 |
 | :-- | :-- | :-- |
+| 只有 `batch_start` → `batch_done`，无 `pick_proxy` / `create_mailbox` | 旧版本在「可用账号 ≥ 目标」时会跳过**立即补号** | 升级网关：立即补号（force）会强制注册一号；或暂时把「目标可用」调高后再点 |
 | `timeout waiting for … email code` | 域名被拒信 / 邮箱 API 慢 | YYDS 换自托管域；加长收信超时；查邮箱后台是否有信 |
 | `Cloud Temp Mail create failed` | 域名无效或 Key 错 | 开自动读域；检查 API Base / Auth / 路径 |
 | TLS / `WRONG_VERSION_NUMBER` | 代理坏或源 IP 未加白 | 换节点；供应商加白；确认不是直连污染 DNS |

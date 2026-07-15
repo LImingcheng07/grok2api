@@ -232,11 +232,14 @@ func (s *Service) tick(ctx context.Context, force bool) {
 	}
 	s.setStatus(func(st *Status) {
 		st.Phase = "batch_start"
-		st.Progress = fmt.Sprintf("starting batch need=%d workers=%d", need, workers)
+		st.Progress = fmt.Sprintf("starting batch need=%d workers=%d available=%d force=%v", need, workers, available, force)
 		st.StartedAt = time.Now().UTC()
-		st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf("[phase:batch_start] need=%d workers=%d force=%v", need, workers, force))
+		st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf(
+			"[phase:batch_start] need=%d workers=%d available=%d target=%d force=%v",
+			need, workers, available, target, force,
+		))
 	})
-	s.logger.Info("auto_register_start", "available", available, "need", need, "workers", workers)
+	s.logger.Info("auto_register_start", "available", available, "need", need, "workers", workers, "force", force)
 
 	var wg sync.WaitGroup
 	jobs := make(chan int, need)
@@ -252,15 +255,25 @@ func (s *Service) tick(ctx context.Context, force bool) {
 				if runCtx.Err() != nil || s.stopRequested.Load() {
 					return
 				}
-				// re-check mid-batch (manual force continues unless user stops)
+				// re-check mid-batch (scheduled mode only; force/run-once always registers)
 				live := s.settings.AutoRegisterRuntime()
 				if !force && !live.Enabled {
 					return
 				}
-				sum, err := s.accounts.Summary(runCtx)
-				if err == nil {
-					if sum.Providers[string(accountdomain.ProviderWeb)].Available >= int64(live.TargetAvailableWeb) {
-						return
+				// Only auto-schedule stops early when pool is already full.
+				// "立即补号一次" must still call registerOne even if available >= target.
+				if !force {
+					sum, err := s.accounts.Summary(runCtx)
+					if err == nil {
+						if sum.Providers[string(accountdomain.ProviderWeb)].Available >= int64(live.TargetAvailableWeb) {
+							s.setStatus(func(st *Status) {
+								st.Progress = fmt.Sprintf("skip: available=%d already >= target=%d",
+									sum.Providers[string(accountdomain.ProviderWeb)].Available, live.TargetAvailableWeb)
+								st.RecentLogs = appendLog(st.RecentLogs,
+									fmt.Sprintf("[phase:skip] available already at target=%d", live.TargetAvailableWeb))
+							})
+							return
+						}
 					}
 				}
 				s.registerOne(runCtx, live, index)
@@ -279,7 +292,7 @@ func (s *Service) tick(ctx context.Context, force bool) {
 		return
 	}
 	s.setStatus(func(st *Status) {
-		if st.Phase != "done" && st.Phase != "failed" {
+		if st.Phase != "done" && st.Phase != "failed" && st.Phase != "skip" {
 			st.Phase = "idle"
 			st.Progress = "batch finished"
 		}
