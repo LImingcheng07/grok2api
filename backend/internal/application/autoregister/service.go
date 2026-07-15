@@ -102,8 +102,13 @@ func (s *Service) Status() Status {
 	out := s.status
 	out.Running = s.busy.Load()
 	out.Stopping = s.stopRequested.Load() && out.Running
-	// Reflect live toggle even between scheduler ticks.
-	out.Enabled = s.settings.AutoRegisterRuntime().Enabled
+	// Always reflect live runtime settings (not only values from the last tick).
+	// UI form fields can look correct after typing, while the last tick still
+	// shows stale min/target — that mismatch is a common source of confusion.
+	cfg := s.settings.AutoRegisterRuntime()
+	out.Enabled = cfg.Enabled
+	out.MinAvailableWeb = cfg.MinAvailableWeb
+	out.TargetAvailableWeb = cfg.TargetAvailableWeb
 	return out
 }
 
@@ -199,27 +204,6 @@ func (s *Service) tick(ctx context.Context, force bool) {
 	if target < minAvail {
 		target = minAvail
 	}
-	if force && target < 1 {
-		target = 1
-	}
-	s.setStatus(func(st *Status) {
-		st.Enabled = cfg.Enabled
-		st.AvailableWeb = available
-		st.MinAvailableWeb = minAvail
-		st.TargetAvailableWeb = target
-		st.LastCheckAt = time.Now().UTC()
-	})
-	// Scheduled mode: only top up when below min. Manual run-once always tries need.
-	if !force && available >= int64(minAvail) {
-		return
-	}
-	need := int(int64(target) - available)
-	if force && need < 1 {
-		need = 1
-	}
-	if need <= 0 {
-		return
-	}
 	workers := cfg.MaxConcurrent
 	if workers < 1 {
 		workers = 1
@@ -227,19 +211,63 @@ func (s *Service) tick(ctx context.Context, force bool) {
 	if workers > 5 {
 		workers = 5
 	}
+
+	// need:
+	// - scheduled: fill gap up to target (capped per tick by MaxConcurrent workers × gap)
+	// - force ("立即补号一次"): always register MaxConcurrent accounts (at least 1),
+	//   independent of whether the pool already meets min/target.
+	//
+	// Historical bug: force used need=max(1, target-available). When the *runtime*
+	// target was still the default (10) or a small saved value while available was
+	// higher (e.g. 65), need collapsed to 1 and the worker then skipped registerOne
+	// because available >= target — log looked like only batch_start → batch_done.
+	// UI could still show typed 500/1000 if save failed or status showed stale fields.
+	var need int
+	if force {
+		need = workers
+	} else {
+		if available >= int64(minAvail) {
+			s.setStatus(func(st *Status) {
+				st.Enabled = cfg.Enabled
+				st.AvailableWeb = available
+				st.MinAvailableWeb = minAvail
+				st.TargetAvailableWeb = target
+				st.LastCheckAt = time.Now().UTC()
+				st.Phase = "skip"
+				st.Progress = fmt.Sprintf("skip schedule: available=%d >= min=%d", available, minAvail)
+				st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf(
+					"[phase:skip] schedule idle available=%d min=%d target=%d", available, minAvail, target,
+				))
+			})
+			return
+		}
+		need = int(int64(target) - available)
+		if need <= 0 {
+			return
+		}
+	}
 	if workers > need {
 		workers = need
 	}
 	s.setStatus(func(st *Status) {
+		st.Enabled = cfg.Enabled
+		st.AvailableWeb = available
+		st.MinAvailableWeb = minAvail
+		st.TargetAvailableWeb = target
+		st.LastCheckAt = time.Now().UTC()
 		st.Phase = "batch_start"
-		st.Progress = fmt.Sprintf("starting batch need=%d workers=%d available=%d force=%v", need, workers, available, force)
+		st.Progress = fmt.Sprintf("starting batch need=%d workers=%d available=%d min=%d target=%d force=%v",
+			need, workers, available, minAvail, target, force)
 		st.StartedAt = time.Now().UTC()
 		st.RecentLogs = appendLog(st.RecentLogs, fmt.Sprintf(
-			"[phase:batch_start] need=%d workers=%d available=%d target=%d force=%v",
-			need, workers, available, target, force,
+			"[phase:batch_start] need=%d workers=%d available=%d min=%d target=%d force=%v",
+			need, workers, available, minAvail, target, force,
 		))
 	})
-	s.logger.Info("auto_register_start", "available", available, "need", need, "workers", workers, "force", force)
+	s.logger.Info("auto_register_start",
+		"available", available, "min", minAvail, "target", target,
+		"need", need, "workers", workers, "force", force,
+	)
 
 	var wg sync.WaitGroup
 	jobs := make(chan int, need)
@@ -255,22 +283,25 @@ func (s *Service) tick(ctx context.Context, force bool) {
 				if runCtx.Err() != nil || s.stopRequested.Load() {
 					return
 				}
-				// re-check mid-batch (scheduled mode only; force/run-once always registers)
 				live := s.settings.AutoRegisterRuntime()
 				if !force && !live.Enabled {
 					return
 				}
-				// Only auto-schedule stops early when pool is already full.
-				// "立即补号一次" must still call registerOne even if available >= target.
+				// Scheduled mode may stop early when pool hits target mid-batch.
+				// Force/run-once never skips for target — user explicitly asked to register.
 				if !force {
 					sum, err := s.accounts.Summary(runCtx)
 					if err == nil {
-						if sum.Providers[string(accountdomain.ProviderWeb)].Available >= int64(live.TargetAvailableWeb) {
+						liveTarget := live.TargetAvailableWeb
+						if liveTarget < live.MinAvailableWeb {
+							liveTarget = live.MinAvailableWeb
+						}
+						if sum.Providers[string(accountdomain.ProviderWeb)].Available >= int64(liveTarget) {
 							s.setStatus(func(st *Status) {
 								st.Progress = fmt.Sprintf("skip: available=%d already >= target=%d",
-									sum.Providers[string(accountdomain.ProviderWeb)].Available, live.TargetAvailableWeb)
+									sum.Providers[string(accountdomain.ProviderWeb)].Available, liveTarget)
 								st.RecentLogs = appendLog(st.RecentLogs,
-									fmt.Sprintf("[phase:skip] available already at target=%d", live.TargetAvailableWeb))
+									fmt.Sprintf("[phase:skip] available already at target=%d", liveTarget))
 							})
 							return
 						}

@@ -171,7 +171,7 @@ python server.py
 
 | phase | 含义 |
 | :-- | :-- |
-| `batch_start` | 批次开始 |
+| `batch_start` | 批次开始（日志含 `available/min/target/force`，便于核对运行时配置是否与 UI 一致） |
 | `pick_proxy` | 选择出口 |
 | `call_sidecar` / `registering` | 调用注册服务 |
 | `resolve_domains` | 解析邮箱域名 |
@@ -225,7 +225,7 @@ create_mailbox
 
 | 现象 | 可能原因 | 处理 |
 | :-- | :-- | :-- |
-| 只有 `batch_start` → `batch_done`，无 `pick_proxy` / `create_mailbox` | 旧版本在「可用账号 ≥ 目标」时会跳过**立即补号** | 升级网关：立即补号（force）会强制注册一号；或暂时把「目标可用」调高后再点 |
+| 只有 `batch_start` → `batch_done`，无 `pick_proxy` / `create_mailbox` | **旧逻辑**：`need=1 force=true` 且运行时 `available ≥ target` 时 worker 静默跳过。注意：日志里的 `need` 用的是**网关内存中的 target**，不是你刚在输入框里打的数字。若你填了 500/1000 但仍出现 `need=1`，说明运行时 target 仍很小（默认 10 或库里是 1），保存未生效或看的是旧状态行 | 1）看状态行 `可用 / min → target` 是否真是 500→1000；2）保存后刷新再点补号；3）升级网关：立即补号按「注册并发」固定补 N 个，**不再**用 target 门禁；新日志含 `available/min/target` |
 | `timeout waiting for … email code` | 域名被拒信 / 邮箱 API 慢 | YYDS 换自托管域；加长收信超时；查邮箱后台是否有信 |
 | `Cloud Temp Mail create failed` | 域名无效或 Key 错 | 开自动读域；检查 API Base / Auth / 路径 |
 | TLS / `WRONG_VERSION_NUMBER` | 代理坏或源 IP 未加白 | 换节点；供应商加白；确认不是直连污染 DNS |

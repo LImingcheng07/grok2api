@@ -262,7 +262,19 @@ export function SettingsPage() {
                   ? ` · ${t("settings.autoRegister.inFlight")}: ${autoStatusQuery.data.inFlight}`
                   : null}
               </div>
-              <div>{t("settings.autoRegister.available")}: {autoStatusQuery.data?.availableWeb ?? "-"} / min {autoStatusQuery.data?.minAvailableWeb ?? "-"} → {autoStatusQuery.data?.targetAvailableWeb ?? "-"}</div>
+              <div>
+                {t("settings.autoRegister.available")}: {autoStatusQuery.data?.availableWeb ?? "-"}
+                {" · "}
+                {t("settings.autoRegister.runtimeThreshold")}: min {autoStatusQuery.data?.minAvailableWeb ?? "-"} → target {autoStatusQuery.data?.targetAvailableWeb ?? "-"}
+                {form.watch("autoRegister.minAvailableWeb") !== autoStatusQuery.data?.minAvailableWeb
+                  || form.watch("autoRegister.targetAvailableWeb") !== autoStatusQuery.data?.targetAvailableWeb
+                  ? (
+                    <span className="ml-1 text-amber-600 dark:text-amber-400">
+                      ({t("settings.autoRegister.formDiffersFromRuntime")})
+                    </span>
+                  )
+                  : null}
+              </div>
               <div>{t("settings.autoRegister.success")}: {autoStatusQuery.data?.successCount ?? 0}</div>
               <div>{t("settings.autoRegister.failure")}: {autoStatusQuery.data?.failureCount ?? 0}</div>
               <div>{t("settings.autoRegister.lastEmail")}: {autoStatusQuery.data?.lastEmail || "-"}</div>
