@@ -2,10 +2,14 @@ package web
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
 type scriptedSSOClient struct {
@@ -61,5 +65,67 @@ func TestSSOBuildConversionSanitizesTokenAndURLs(t *testing.T) {
 		if safeXAIURL(value) {
 			t.Fatalf("unsafe URL accepted: %s", value)
 		}
+	}
+}
+
+func TestRetrySSOBuildConversionRetriesOnlyRateLimits(t *testing.T) {
+	t.Run("rate limited", func(t *testing.T) {
+		calls := 0
+		waits := 0
+		seed, err := retrySSOBuildConversion(context.Background(), 6, func() (provider.CredentialSeed, error) {
+			calls++
+			if calls < 3 {
+				return provider.CredentialSeed{}, errSSOBuildRateLimited
+			}
+			return provider.CredentialSeed{Name: "recovered"}, nil
+		}, func(context.Context, int) error {
+			waits++
+			return nil
+		})
+		if err != nil || seed.Name != "recovered" || calls != 3 || waits != 2 {
+			t.Fatalf("seed=%#v err=%v calls=%d waits=%d", seed, err, calls, waits)
+		}
+	})
+
+	t.Run("permanent failure", func(t *testing.T) {
+		calls := 0
+		_, err := retrySSOBuildConversion(context.Background(), 6, func() (provider.CredentialSeed, error) {
+			calls++
+			return provider.CredentialSeed{}, errors.New("access denied")
+		}, func(context.Context, int) error {
+			t.Fatal("permanent failure waited for retry")
+			return nil
+		})
+		if err == nil || calls != 1 {
+			t.Fatalf("err=%v calls=%d", err, calls)
+		}
+	})
+}
+
+func TestSSOBuildRateLimitDetection(t *testing.T) {
+	for _, test := range []struct {
+		status int
+		body   string
+		url    string
+	}{
+		{status: http.StatusTooManyRequests},
+		{status: http.StatusOK, body: `{"error":"slow_down"}`},
+		{status: http.StatusOK, url: "https://auth.x.ai/rate_limited"},
+	} {
+		if !isSSOBuildRateLimited(test.status, test.url, []byte(test.body)) {
+			t.Fatalf("rate limit not detected: %#v", test)
+		}
+	}
+	if isSSOBuildRateLimited(http.StatusForbidden, "https://auth.x.ai/error", []byte("access denied")) {
+		t.Fatal("403 access denied classified as a rate limit")
+	}
+}
+
+func TestSSOBuildRetryDelayIsBounded(t *testing.T) {
+	if delay := ssoBuildRetryDelay(1); delay != 2*time.Second {
+		t.Fatalf("first delay = %s", delay)
+	}
+	if delay := ssoBuildRetryDelay(99); delay != 12*time.Second {
+		t.Fatalf("bounded delay = %s", delay)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
@@ -30,6 +31,14 @@ const (
 	ssoApproveURL    = "https://auth.x.ai/oauth2/device/approve"
 	ssoTokenURL      = "https://auth.x.ai/oauth2/token"
 	maxAuthBody      = 2 << 20
+	ssoBuildAttempts = 6
+	ssoBuildMinGap   = 1200 * time.Millisecond
+)
+
+var (
+	errSSOBuildRateLimited = errors.New("xAI Device Flow rate limited")
+	ssoBuildSlotMu         sync.Mutex
+	ssoBuildLastStart      time.Time
 )
 
 type ssoBuildHTTPClient interface {
@@ -59,13 +68,18 @@ func (a *Adapter) ConvertToBuild(ctx context.Context, credential accountdomain.C
 		return provider.CredentialSeed{}, err
 	}
 	defer lease.Release()
-	requestCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	requestCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	flow := &ssoBuildFlow{
 		client: lease, userAgent: lease.UserAgent,
 		cookies: map[string]string{"sso": token, "sso-rw": token},
 	}
-	seed, err := flow.convert(requestCtx, credential)
+	seed, err := retrySSOBuildConversion(requestCtx, ssoBuildAttempts, func() (provider.CredentialSeed, error) {
+		if err := waitSSOBuildSlot(requestCtx); err != nil {
+			return provider.CredentialSeed{}, err
+		}
+		return flow.convert(requestCtx, credential)
+	}, waitSSOBuildRetry)
 	if err != nil {
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, conversionStatus(err), err)
 		return provider.CredentialSeed{}, err
@@ -75,7 +89,7 @@ func (a *Adapter) ConvertToBuild(ctx context.Context, credential accountdomain.C
 }
 
 func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Credential) (provider.CredentialSeed, error) {
-	status, finalURL, _, err := f.do(ctx, http.MethodGet, ssoAccountsURL, nil)
+	status, finalURL, body, err := f.do(ctx, http.MethodGet, ssoAccountsURL, nil)
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
@@ -83,15 +97,21 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 		return provider.CredentialSeed{}, provider.ErrUnauthorized
 	}
 	if status < 200 || status >= 400 {
+		if isSSOBuildRateLimited(status, finalURL, body) {
+			return provider.CredentialSeed{}, fmt.Errorf("%w: accounts session", errSSOBuildRateLimited)
+		}
 		return provider.CredentialSeed{}, fmt.Errorf("校验 Grok Web SSO 失败: %w", conversionHTTPError{status: status})
 	}
 
 	form := url.Values{"client_id": {ssoBuildClientID}, "scope": {ssoBuildScope}}
-	status, _, body, err := f.do(ctx, http.MethodPost, ssoDeviceURL, form)
+	status, _, body, err = f.do(ctx, http.MethodPost, ssoDeviceURL, form)
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
 	if status < 200 || status >= 300 {
+		if isSSOBuildRateLimited(status, "", body) {
+			return provider.CredentialSeed{}, fmt.Errorf("%w: device/code", errSSOBuildRateLimited)
+		}
 		return provider.CredentialSeed{}, fmt.Errorf("xAI Device Flow 启动失败: %w", conversionHTTPError{status: status})
 	}
 	var device struct {
@@ -114,33 +134,48 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 		device.ExpiresIn = 1800
 	}
 
-	status, finalURL, _, err = f.do(ctx, http.MethodGet, device.VerificationURIComplete, nil)
+	status, finalURL, body, err = f.do(ctx, http.MethodGet, device.VerificationURIComplete, nil)
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
 	if status < 200 || status >= 400 {
+		if isSSOBuildRateLimited(status, finalURL, body) {
+			return provider.CredentialSeed{}, fmt.Errorf("%w: device page", errSSOBuildRateLimited)
+		}
 		return provider.CredentialSeed{}, fmt.Errorf("打开 Device Flow 验证页失败: %w", conversionHTTPError{status: status})
 	}
-	status, finalURL, _, err = f.do(ctx, http.MethodPost, ssoVerifyURL, url.Values{"user_code": {device.UserCode}})
+	status, finalURL, body, err = f.do(ctx, http.MethodPost, ssoVerifyURL, url.Values{"user_code": {device.UserCode}})
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
 	if status < 200 || status >= 400 {
+		if isSSOBuildRateLimited(status, finalURL, body) {
+			return provider.CredentialSeed{}, fmt.Errorf("%w: device/verify", errSSOBuildRateLimited)
+		}
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动验证 Device Flow 失败: %w", conversionHTTPError{status: status})
 	}
 	if !strings.Contains(finalURL, "consent") {
+		if isSSOBuildRateLimited(status, finalURL, body) {
+			return provider.CredentialSeed{}, fmt.Errorf("%w: device/verify", errSSOBuildRateLimited)
+		}
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动验证 Device Flow 失败")
 	}
-	status, finalURL, _, err = f.do(ctx, http.MethodPost, ssoApproveURL, url.Values{
+	status, finalURL, body, err = f.do(ctx, http.MethodPost, ssoApproveURL, url.Values{
 		"user_code": {device.UserCode}, "action": {"allow"}, "principal_type": {"User"}, "principal_id": {""},
 	})
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
 	if status < 200 || status >= 400 {
+		if isSSOBuildRateLimited(status, finalURL, body) {
+			return provider.CredentialSeed{}, fmt.Errorf("%w: device/approve", errSSOBuildRateLimited)
+		}
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动批准 Device Flow 失败: %w", conversionHTTPError{status: status})
 	}
 	if !strings.Contains(finalURL, "done") {
+		if isSSOBuildRateLimited(status, finalURL, body) {
+			return provider.CredentialSeed{}, fmt.Errorf("%w: device/approve", errSSOBuildRateLimited)
+		}
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动批准 Device Flow 失败")
 	}
 
@@ -176,14 +211,18 @@ func (f *ssoBuildFlow) pollToken(ctx context.Context, deviceCode string, interva
 		interval = time.Second
 	}
 	deadline := time.Now().Add(min(expiresIn, 75*time.Second))
+	first := true
 	for time.Now().Before(deadline) {
-		timer := time.NewTimer(interval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ssoBuildToken{}, ctx.Err()
-		case <-timer.C:
+		if !first {
+			timer := time.NewTimer(interval)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ssoBuildToken{}, ctx.Err()
+			case <-timer.C:
+			}
 		}
+		first = false
 		status, _, body, err := f.do(ctx, http.MethodPost, ssoTokenURL, url.Values{
 			"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"}, "client_id": {ssoBuildClientID}, "device_code": {deviceCode},
 		})
@@ -213,6 +252,8 @@ func (f *ssoBuildFlow) pollToken(ctx context.Context, deviceCode string, interva
 		case "slow_down":
 			interval += 5 * time.Second
 			continue
+		case "rate_limited":
+			return ssoBuildToken{}, fmt.Errorf("%w: oauth token", errSSOBuildRateLimited)
 		case "access_denied", "expired_token":
 			return ssoBuildToken{}, provider.ErrAuthorizationDenied
 		default:
@@ -223,6 +264,77 @@ func (f *ssoBuildFlow) pollToken(ctx context.Context, deviceCode string, interva
 		}
 	}
 	return ssoBuildToken{}, fmt.Errorf("xAI Device Flow 轮询超时")
+}
+
+func retrySSOBuildConversion(
+	ctx context.Context,
+	attempts int,
+	convert func() (provider.CredentialSeed, error),
+	wait func(context.Context, int) error,
+) (provider.CredentialSeed, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		seed, err := convert()
+		if err == nil {
+			return seed, nil
+		}
+		lastErr = err
+		if !errors.Is(err, errSSOBuildRateLimited) || attempt == attempts {
+			return provider.CredentialSeed{}, err
+		}
+		if err := wait(ctx, attempt); err != nil {
+			return provider.CredentialSeed{}, err
+		}
+	}
+	return provider.CredentialSeed{}, lastErr
+}
+
+func waitSSOBuildSlot(ctx context.Context) error {
+	ssoBuildSlotMu.Lock()
+	defer ssoBuildSlotMu.Unlock()
+	if delay := time.Until(ssoBuildLastStart.Add(ssoBuildMinGap)); delay > 0 {
+		if err := waitSSOBuildDuration(ctx, delay); err != nil {
+			return err
+		}
+	}
+	ssoBuildLastStart = time.Now()
+	return nil
+}
+
+func waitSSOBuildRetry(ctx context.Context, failedAttempt int) error {
+	return waitSSOBuildDuration(ctx, ssoBuildRetryDelay(failedAttempt))
+}
+
+func ssoBuildRetryDelay(failedAttempt int) time.Duration {
+	if failedAttempt < 1 {
+		failedAttempt = 1
+	}
+	return min(time.Duration(failedAttempt)*2*time.Second, 12*time.Second)
+}
+
+func waitSSOBuildDuration(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func isSSOBuildRateLimited(status int, finalURL string, body []byte) bool {
+	if status == http.StatusTooManyRequests {
+		return true
+	}
+	text := strings.ToLower(finalURL + " " + string(body))
+	return strings.Contains(text, "slow_down") ||
+		strings.Contains(text, "rate_limited") ||
+		strings.Contains(text, "rate limit") ||
+		strings.Contains(text, "too many requests")
 }
 
 func (f *ssoBuildFlow) do(ctx context.Context, method, endpoint string, form url.Values) (int, string, []byte, error) {
