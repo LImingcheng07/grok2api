@@ -184,7 +184,7 @@ python server.py
 | `import_web` | 导入号池 |
 | `convert_build` | Web SSO → Build OAuth（验活前置） |
 | `probe_settle` | 入库后等待（默认 30s，对齐 grokcli-2api） |
-| `probe_build` | Build `/models` 测活；401/403 删除该号 |
+| `probe_build` | Build **真实 chat ping**（非 `/models`）；chat 401/403 删除该号 |
 | `done` | 验活通过才算成功 |
 | `failed` / `stopped` | 失败 / 用户停止 |
 
@@ -234,8 +234,8 @@ create_mailbox
 | TLS / `WRONG_VERSION_NUMBER` | 代理坏或源 IP 未加白 | 换节点；供应商加白；确认不是直连污染 DNS |
 | Turnstile / captcha 拒绝 | 出口质量差或未打码 | 配 ez-captcha；换住宅节点 |
 | `registration completed without SSO` | 注册过了但抽 cookie 失败 | 看日志 `extract_sso`；重试；检查代理稳定性 |
-| `probe_build` / `build probe rejected … 403` | Build 测活失败（死号 / 无 chat 权限） | **正常**：号已删除不进池。查出口 Build 代理、token 是否立刻被拒；可调长「验活前等待」 |
-| 能注册但调用 403 | 以前只导 Web SSO、未验活 | 开启「注册后 Build 验活」（默认开）：转 Build + `/models`，403 丢弃 |
+| `probe_build` / `build probe rejected … 403` | Build **chat** 测活失败（死号 / chat endpoint denied） | **正常**：号已删除不进池。注意：仅 `/models` 正常不够，必须以 chat 为准 |
+| 能注册但调用 403，`/models` 却正常 | 旧逻辑只测目录接口 | 升级：验活改为 chat ping（对齐 grokcli-2api）；403 丢弃 |
 | sidecar 连不上 | 地址错或未启动 | `curl http://127.0.0.1:8091/healthz`；Compose 用服务名 |
 | 本地 curl 一直超时 | 系统 `http_proxy` 劫持了 127.0.0.1 | `curl --noproxy '*'` 或设 `NO_PROXY=*` |
 

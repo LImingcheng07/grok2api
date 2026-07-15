@@ -2,8 +2,10 @@ package account
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -13,6 +15,7 @@ import (
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -883,7 +886,8 @@ func webConsoleAccountName(webName, fallback string) string {
 }
 
 // BuildProbeResult is the outcome of a post-register / admin Build live check.
-// Mirrors HM2899/grokcli-2api model_health probe: real upstream call, then kick dead tokens.
+// Mirrors HM2899/grokcli-2api model_health probe: real chat ping, then kick dead tokens.
+// Note: GET /models alone is NOT enough — many 403 chat-denied tokens still list models.
 type BuildProbeResult struct {
 	OK         bool
 	BuildID    uint64
@@ -894,8 +898,9 @@ type BuildProbeResult struct {
 	DeadToken bool
 }
 
-// ProbeBuildAccount hits Grok Build with a minimal request (ListModels, optional chat probe model).
-// status 401/403 and permanent chat denials mark DeadToken.
+// ProbeBuildAccount live-checks Build like HM2899/grokcli-2api model_health:
+// real chat/completions-style ping via ForwardResponse (NOT /models alone —
+// many dead tokens still list models while chat returns 403).
 func (s *Service) ProbeBuildAccount(ctx context.Context, buildID uint64, probeModel string) (BuildProbeResult, error) {
 	value, err := s.accounts.Get(ctx, buildID)
 	if err != nil {
@@ -904,31 +909,86 @@ func (s *Service) ProbeBuildAccount(ctx context.Context, buildID uint64, probeMo
 	if value.Provider != accountdomain.ProviderBuild {
 		return BuildProbeResult{}, fmt.Errorf("账号 %d 不是 Grok Build", buildID)
 	}
-	adapter, ok := s.providers.Models(accountdomain.ProviderBuild)
-	if !ok {
-		return BuildProbeResult{}, fmt.Errorf("Grok Build 模型目录能力未注册")
+	model := strings.TrimSpace(probeModel)
+	if model == "" {
+		model = resolveProbeModel(ctx, s, value)
 	}
-	models, err := adapter.ListModels(ctx, value)
+	adapter, ok := s.providers.Responses(accountdomain.ProviderBuild)
+	if !ok {
+		return BuildProbeResult{}, fmt.Errorf("Grok Build Responses 能力未注册")
+	}
+	// Same shape as grokcli-2api: tiny user "ping", max_tokens=8, non-stream for simpler body parse.
+	// Path is /responses; OperationChat normalizes OpenAI chat body → upstream Responses.
+	body, _ := json.Marshal(map[string]any{
+		"model":      model,
+		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"stream":     false,
+		"max_tokens": 8,
+	})
+	probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	resp, err := adapter.ForwardResponse(probeCtx, provider.ResponseResourceRequest{
+		Credential:    value,
+		Method:        http.MethodPost,
+		Path:          "/responses",
+		Body:          body,
+		Model:         model,
+		Streaming:     false,
+		NormalizeBody: true,
+		Operation:     conversation.OperationChat,
+	})
 	if err != nil {
-		result := BuildProbeResult{BuildID: buildID, Error: err.Error()}
-		result.StatusCode, result.DeadToken = classifyBuildProbeError(err.Error())
+		result := BuildProbeResult{BuildID: buildID, Model: model, Error: err.Error()}
+		result.StatusCode, result.DeadToken = classifyBuildProbeError(0, err.Error())
 		return result, nil
 	}
-	model := strings.TrimSpace(probeModel)
-	if model == "" && len(models) > 0 {
-		model = models[0]
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.Diagnostic != nil && len(resp.Diagnostic.Body) > 0 {
+		raw = resp.Diagnostic.Body
 	}
-	// ListModels 2xx is already a strong signal; optional model id is recorded for logs.
-	return BuildProbeResult{OK: true, BuildID: buildID, StatusCode: http.StatusOK, Model: model}, nil
+	status := resp.StatusCode
+	if resp.Diagnostic != nil && resp.Diagnostic.StatusCode > 0 {
+		status = resp.Diagnostic.StatusCode
+	}
+	errText := strings.TrimSpace(string(raw))
+	if status >= 200 && status < 300 {
+		return BuildProbeResult{OK: true, BuildID: buildID, StatusCode: status, Model: model}, nil
+	}
+	result := BuildProbeResult{
+		BuildID: buildID, StatusCode: status, Model: model,
+		Error: truncateProbeText(errText, 400),
+	}
+	result.StatusCode, result.DeadToken = classifyBuildProbeError(status, errText)
+	if result.StatusCode == 0 {
+		result.StatusCode = status
+	}
+	return result, nil
 }
 
-func classifyBuildProbeError(message string) (status int, dead bool) {
+func resolveProbeModel(ctx context.Context, s *Service, value accountdomain.Credential) string {
+	// Prefer configured default; fall back to ListModels first id, then grok-3 (widely present).
+	const fallback = "grok-3"
+	if catalog, ok := s.providers.Models(accountdomain.ProviderBuild); ok {
+		if models, err := catalog.ListModels(ctx, value); err == nil {
+			for _, m := range models {
+				if strings.TrimSpace(m) != "" {
+					return strings.TrimSpace(m)
+				}
+			}
+		}
+	}
+	return fallback
+}
+
+func classifyBuildProbeError(status int, message string) (int, bool) {
 	text := strings.ToLower(strings.TrimSpace(message))
-	// ListModels formats: "上游模型接口返回 %d"
-	for _, code := range []int{401, 403, 402, 429} {
-		if strings.Contains(text, fmt.Sprintf("返回 %d", code)) || strings.Contains(text, fmt.Sprintf(" %d", code)) {
-			status = code
-			break
+	if status == 0 {
+		for _, code := range []int{401, 403, 402, 429, 500, 502, 503} {
+			if strings.Contains(text, fmt.Sprintf("返回 %d", code)) || strings.Contains(text, fmt.Sprintf(" %d", code)) {
+				status = code
+				break
+			}
 		}
 	}
 	if status == 0 {
@@ -938,22 +998,37 @@ func classifyBuildProbeError(message string) (status int, dead bool) {
 			status = 403
 		}
 	}
-	if status == 401 || status == 403 {
-		dead = true
-	}
-	if strings.Contains(text, "access to the chat endpoint is denied") || strings.Trim(strings.TrimSpace(text), " .!\t\r\n") == "access denied" {
+	dead := status == 401 || status == 403
+	// grokcli-2api / gateway permanent denial signals (chat endpoint blocked).
+	if strings.Contains(text, "access to the chat endpoint is denied") ||
+		strings.Trim(strings.TrimSpace(text), " .!\t\r\n") == "access denied" ||
+		strings.Contains(text, "chat endpoint is denied") {
 		dead = true
 		if status == 0 {
 			status = 403
 		}
 	}
-	if strings.Contains(text, "unauthorized") || strings.Contains(text, "invalid token") || strings.Contains(text, "token expired") {
-		dead = true
-		if status == 0 {
-			status = 401
+	if strings.Contains(text, "unauthorized") || strings.Contains(text, "invalid token") ||
+		strings.Contains(text, "token expired") || strings.Contains(text, "authentication") {
+		// Avoid marking free-usage as dead.
+		if !strings.Contains(text, "free-usage") && !strings.Contains(text, "usage-exhausted") {
+			dead = true
+			if status == 0 {
+				status = 401
+			}
 		}
 	}
+	// Free-usage / spending: not "dead token" for drop policy on soft path,
+	// but register path still may choose to drop — caller uses DeadToken || 401/403.
 	return status, dead
+}
+
+func truncateProbeText(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if max <= 0 || len(value) <= max {
+		return value
+	}
+	return value[:max]
 }
 
 // DropRegisteredAccounts removes a failed probe account and any linked Web/Build pair.
