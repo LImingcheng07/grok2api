@@ -259,10 +259,25 @@ create_mailbox
 
 ---
 
-## 11. 相关链接
+## 11. 公开仓库脱敏清单
+
+开源或推送到公开 Git 前请确认：
+
+- [ ] 未提交 `config.yaml`（仅 `config.example.yaml`）  
+- [ ] 未提交 `.env`、真实 `proxies.txt`、`data/`、`sso_output/`  
+- [ ] 文档 / UI 占位符为 `example.com`，无个人邮箱域名或真实 Key  
+- [ ] 截图不含账号、SSO、代理密码  
+- [ ] 已阅读 [SECURITY.md](../SECURITY.md)  
+
+本地密钥与数据库只存在于本机 gitignore 路径，**不会**也不应进入公开历史。
+
+---
+
+## 12. 相关链接
 
 - 上游项目：https://github.com/chenyme/grok2api  
 - 原作者：https://github.com/chenyme  
+- 安全说明：[SECURITY.md](../SECURITY.md)  
 - YYDS Mail：https://vip.215.im/docs  
 - 本仓库 Compose：`docker-compose.yml` 中 `auto-register` 服务  
 - 协议实现：`services/auto_register/protocol_register.py`  

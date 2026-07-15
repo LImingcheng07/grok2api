@@ -369,7 +369,7 @@ export function SettingsPage() {
               <SettingsField controlId="auto-register-mail-domains" className="sm:col-span-2" label={t("settings.autoRegister.mailDomains")} error={form.formState.errors.autoRegister?.mailDomains?.message}>
                 <Input
                   id="auto-register-mail-domains"
-                  placeholder={form.watch("autoRegister.mailProvider") === "yyds" ? "mail.your-domain.com" : "edu.example.com, doclaw.cn"}
+                  placeholder={form.watch("autoRegister.mailProvider") === "yyds" ? "mail.your-domain.com" : "edu.example.com, mail.example.com"}
                   {...form.register("autoRegister.mailDomains")}
                 />
                 {form.watch("autoRegister.mailProvider") === "yyds" ? (
