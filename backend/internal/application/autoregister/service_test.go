@@ -31,12 +31,15 @@ func TestProbeDisposition(t *testing.T) {
 	}
 }
 
-func TestBatchAttemptCountIsBoundedByWorkers(t *testing.T) {
-	if got := batchAttemptCount(500, 5); got != 5 {
-		t.Fatalf("batchAttemptCount(500, 5) = %d, want 5", got)
+func TestBatchAttemptCountQueuesFullGap(t *testing.T) {
+	if got := batchAttemptCount(500, 5); got != 500 {
+		t.Fatalf("batchAttemptCount(500, 5) = %d, want 500", got)
 	}
 	if got := batchAttemptCount(2, 5); got != 2 {
 		t.Fatalf("batchAttemptCount(2, 5) = %d, want 2", got)
+	}
+	if got := batchAttemptCount(500, 0); got != 0 {
+		t.Fatalf("batchAttemptCount(500, 0) = %d, want 0", got)
 	}
 }
 

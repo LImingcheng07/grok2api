@@ -234,8 +234,9 @@ func (s *Service) tick(ctx context.Context, force bool) {
 		workers = 5
 	}
 
-	// Keep each pass bounded. A systemic mail/captcha/provider failure must not
-	// consume hundreds of addresses before the operator can react.
+	// Queue the full gap. MaxConcurrent limits simultaneous registrations; it
+	// must not also cap the total work in a refill pass, otherwise a target of
+	// 1000 with concurrency 3 appears to stop after every three accounts.
 	gap := int(int64(target) - availableBuild)
 	if gap < 0 {
 		gap = 0
@@ -391,10 +392,7 @@ func batchAttemptCount(gap, workers int) int {
 	if gap <= 0 || workers <= 0 {
 		return 0
 	}
-	if gap < workers {
-		return gap
-	}
-	return workers
+	return gap
 }
 
 func decideProbeDisposition(probe accountapp.BuildProbeResult, err error) probeDisposition {
