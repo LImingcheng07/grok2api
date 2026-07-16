@@ -411,7 +411,12 @@ func decideProbeDisposition(probe accountapp.BuildProbeResult, err error) probeD
 }
 
 func finishBatchStatus(st *Status) {
-	if st.LastError == "" && st.Phase != "done" && st.Phase != "skip" {
+	if st.LastError != "" {
+		st.Phase = "retry_wait"
+		st.Progress = "batch finished with failures; waiting for next refill pass"
+		return
+	}
+	if st.Phase != "done" && st.Phase != "skip" {
 		st.Phase = "idle"
 		st.Progress = "batch finished"
 	}

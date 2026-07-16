@@ -275,6 +275,8 @@ class CloudTempMailReceiver:
         self.jwt = jwt
         self.config = config
         self.api_base = str(config.get("cloudflare_api_base") or "").rstrip("/")
+        self._consumed_message_ids: set[str] = set()
+        self._consumed_codes: set[str] = set()
 
     def wait_for_code(self, timeout: float = 120, emit: Callable[[str], None] | None = None) -> str:
         if not self.api_base:
@@ -306,6 +308,8 @@ class CloudTempMailReceiver:
             for raw in messages:
                 item = dict(raw or {})
                 msg_id = str(item.get("id") or item.get("msgid") or item.get("message_id") or "")
+                if msg_id and msg_id in self._consumed_message_ids:
+                    continue
                 if msg_id:
                     attempts = int(seen.get(msg_id, 0))
                     if attempts >= 8:
@@ -335,7 +339,10 @@ class CloudTempMailReceiver:
                         except Exception:
                             continue
                 code = _extract_xai_code(text, subject)
-                if code and len(code) == 6:
+                if code and len(code) == 6 and code not in self._consumed_codes:
+                    if msg_id:
+                        self._consumed_message_ids.add(msg_id)
+                    self._consumed_codes.add(code)
                     return code
             time.sleep(poll)
         raise RuntimeError("timeout waiting for xAI email verification code")
@@ -950,11 +957,12 @@ def register_one(
         _phase(emit, "got_email_code", f"#{index} code received")
 
         signup_error = ""
+        mail_timeout = float(config.get("protocol_mail_timeout_sec") or 120)
         for attempt in range(1, 3):
             if attempt > 1:
                 _phase(emit, "send_email_code", f"#{index} resend code attempt={attempt}")
                 client.create_email_validation_code(email)
-                code = receiver.wait_for_code(timeout=120, emit=emit)
+                code = receiver.wait_for_code(timeout=mail_timeout, emit=emit)
                 _phase(emit, "got_email_code", f"#{index} code received (retry)")
             _phase(emit, "verify_email_code", f"#{index} verify code")
             client.verify_email_validation_code(email, code)

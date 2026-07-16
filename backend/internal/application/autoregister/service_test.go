@@ -51,10 +51,13 @@ func TestAutoRegisterRequiresBuildVerification(t *testing.T) {
 	}
 }
 
-func TestFinishBatchStatusPreservesActionableFailure(t *testing.T) {
+func TestFinishBatchStatusMarksFailureForScheduledRetry(t *testing.T) {
 	status := Status{Phase: "probe_build", Progress: "upstream timeout", LastError: "upstream timeout"}
 	finishBatchStatus(&status)
-	if status.Phase != "probe_build" || status.Progress != "upstream timeout" {
-		t.Fatalf("failure status was overwritten: %#v", status)
+	if status.Phase != "retry_wait" || status.Progress != "batch finished with failures; waiting for next refill pass" {
+		t.Fatalf("failure status does not communicate scheduled retry: %#v", status)
+	}
+	if status.LastError != "upstream timeout" {
+		t.Fatalf("actionable failure was lost: %#v", status)
 	}
 }
