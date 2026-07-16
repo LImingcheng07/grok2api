@@ -17,7 +17,8 @@ services:
     security_opt:
       - no-new-privileges:true
     depends_on:
-      - auto-register
+      auto-register:
+        condition: service_healthy
 
   # 协议自动补号 sidecar（Cloud Temp Mail + ez-captcha）
   # 在管理端「设置 → 自动补号」开启；Sidecar 地址填 http://auto-register:8091
@@ -33,6 +34,12 @@ services:
       AUTO_REGISTER_PORT: "8091"
     restart: unless-stopped
     init: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     security_opt:
       - no-new-privileges:true
 
